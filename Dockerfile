@@ -28,9 +28,15 @@ RUN bun run build
 
 # copy production dependencies and source code into final image
 FROM base AS release
+
+# ✅ Install Chromium
+RUN apt update && apt install -y chromium && apt clean
+
 COPY --from=install /temp/prod/node_modules node_modules
 COPY --from=prerelease /usr/src/app/package.json .
 COPY --from=prerelease /usr/src/app /usr/src/app
+
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 # run the app
 USER bun

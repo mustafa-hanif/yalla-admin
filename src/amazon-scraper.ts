@@ -12,6 +12,8 @@ export class AmazonScraper {
     try {
       // Launch browser
       browser = await puppeteer.launch({
+        executablePath:
+          process.env.PUPPETEER_EXECUTABLE_PATH || "/usr/bin/chromium",
         headless: true,
         args: [
           "--no-sandbox",
