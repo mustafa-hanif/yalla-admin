@@ -33,6 +33,7 @@ import { string } from "dynamodb-toolbox/schema/string";
 import { number } from "dynamodb-toolbox/schema/number";
 
 import index from "./index.html";
+import { searchAmazon } from "./amazon-scraper";
 
 /*
 Sorting Strategies for Single Table Design:
@@ -602,6 +603,11 @@ const server = serve({
       },
     },
 
+    "/api/amazon/:keyword/:limit": async (req) => {
+      const { keyword, limit } = req.params;
+      const results = await searchAmazon(keyword, Number(limit));
+      return Response.json(results);
+    },
     // Handle Amazon route
   },
 
