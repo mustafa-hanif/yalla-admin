@@ -1,6 +1,6 @@
-# use the official Bun image
+# use the official Bun image with explicit platform for AWS Fargate compatibility
 # see all versions at https://hub.docker.com/r/oven/bun/tags
-FROM oven/bun:1 AS base
+FROM --platform=linux/arm64 oven/bun:1 AS base
 WORKDIR /usr/src/app
 
 # install dependencies into temp directory
