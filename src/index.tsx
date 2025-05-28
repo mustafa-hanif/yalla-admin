@@ -601,6 +601,8 @@ const server = serve({
         }
       },
     },
+
+    // Handle Amazon route
   },
 
   development: process.env.NODE_ENV !== "production" && {

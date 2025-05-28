@@ -15,6 +15,7 @@ export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       gcTime: 0,
+      staleTime: 0,
     },
   },
 });
@@ -466,8 +467,6 @@ export function useProductSearch(
  * Helper to invalidate all user-related queries
  */
 export function useInvalidateUser() {
-  const queryClient = useQueryClient();
-
   return {
     invalidateUser: (userId: string) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.user(userId) });

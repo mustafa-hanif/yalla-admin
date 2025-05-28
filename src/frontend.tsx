@@ -16,6 +16,7 @@ import {
   QueryClientProvider,
 } from "@tanstack/react-query";
 import { queryClient } from "./lib/queries";
+import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
 
 const elem = document.getElementById("root")!;
 
@@ -23,6 +24,9 @@ const app = (
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <App />
+
+      {/* React Query DevTools */}
+      <ReactQueryDevtools initialIsOpen={false} />
     </QueryClientProvider>
   </StrictMode>
 );
