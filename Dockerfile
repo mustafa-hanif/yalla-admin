@@ -40,4 +40,5 @@ ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 # run the app
 EXPOSE 80/tcp
+ENV NODE_ENV=production
 ENTRYPOINT [ "bun", "run", "start" ]
