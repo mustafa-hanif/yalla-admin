@@ -39,6 +39,5 @@ COPY --from=prerelease /usr/src/app /usr/src/app
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 # run the app
-USER bun
 EXPOSE 80/tcp
 ENTRYPOINT [ "bun", "run", "start" ]
