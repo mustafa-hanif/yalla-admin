@@ -618,6 +618,7 @@ const server = serve({
     // Echo console logs from the browser to the server
     console: true,
   },
+  port: process.env.NODE_ENV !== "production" ? 3000 : 80,
 });
 
 /*

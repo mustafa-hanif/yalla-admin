@@ -40,5 +40,5 @@ ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 # run the app
 USER bun
-EXPOSE 3000/tcp
+EXPOSE 80/tcp
 ENTRYPOINT [ "bun", "run", "start" ]
