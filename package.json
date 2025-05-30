@@ -27,6 +27,8 @@
     "dynamodb-toolbox": "^2.4.4",
     "lucide-react": "^0.511.0",
     "puppeteer": "^24.9.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
     "react": "^19",
     "react-dom": "^19",
     "react-hook-form": "^7.54.2",
