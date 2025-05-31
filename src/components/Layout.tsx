@@ -55,7 +55,7 @@ export function Layout() {
             <div className="flex items-center gap-4">
               <Link to="/" className="flex items-center gap-2">
                 <h1 className="text-2xl font-bold bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
-                  Yalla Admin 8
+                  Salman was here
                 </h1>
               </Link>
             </div>
