@@ -1,14 +1,40 @@
 /*
-Single Table Design Patterns Implemented:
+SQL Database Design (migrated from DynamoDB single-table design):
 
 1. Entity Structure:
-   - User Profile: PK="User#1", SK="Profile"
-   - User Products: PK="User#1", SK="Product#1", SK="Product#2", etc.
+   - Users table: Stores user profiles
+   - Products table: Stores user products with foreign key to               const result = await sql`
+                SELECT *, data as json_data FR              const itemResults = await sql`
+                SELECT *, data as json_data FROM items 
+                WHERE pk = ${partitionKey}
+                ${sortKeyPattern ? sql`AND sk LIKE ${sortKeyPattern + "%"}` : sql``}
+                ${reverse ? sql`ORDER BY sk DESC` : sql`ORDER BY sk ASC`}
+                LIMIT ${limit}
+              `;
+
+              // Handle JSONB data for generic items
+              const parsedItems = itemResults
+                .map((item) => ({
+                  ...item,
+                  ...(item.json_data || {}),
+                }))
+                .map((item) => {
+                  delete item.data;
+                  delete item.json_data;
+                  return item;
+                }));        WHERE pk = ${partitionKey} AND sk = ${sortKey}
+                LIMIT 1
+              `;
+              if (result[0]) {
+                item = { ...result[0], ...(result[0].json_data || {}) };
+                delete item.data;
+                delete item.json_data;
+              }- Generic Items table: For flexible entity storage (maintains DynamoDB compatibility)
 
 2. Access Patterns:
-   - Get User Profile: GetItem with PK="User#1", SK="Profile"
-   - Get All User Products: Query with PK="User#1", SK begins_with "Product#"
-   - Get All User Data: Query with PK="User#1" (gets profile + all products)
+   - Get User Profile: SELECT from users table
+   - Get All User Products: SELECT from products table with user_id filter
+   - Get All User Data: JOIN users and products tables
 
 3. Query Examples:
    - `/api/users/1` - Gets all data for user 1 (profile + products)
@@ -16,769 +42,934 @@ Single Table Design Patterns Implemented:
    - `/api/products?userId=1&limit=5` - Gets products with pagination
 
 4. Benefits:
-   - Single query to get all related data
-   - Efficient use of DynamoDB capacity units
-   - Scalable for large datasets with pagination
+   - Relational data integrity
+   - Standard SQL operations
+   - Efficient indexing and querying
 */
 
-import { serve } from "bun";
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { GetItemCommand } from "dynamodb-toolbox/entity/actions/get";
-import { QueryCommand } from "dynamodb-toolbox/table/actions/query";
-import { Table } from "dynamodb-toolbox/table";
-import { Entity } from "dynamodb-toolbox/entity";
-import { item } from "dynamodb-toolbox/schema/item";
-import { string } from "dynamodb-toolbox/schema/string";
-import { number } from "dynamodb-toolbox/schema/number";
+import { serve, sql } from "bun";
 
 import index from "./index.html";
 import { searchAmazon } from "./amazon-scraper";
 
-/*
-Sorting Strategies for Single Table Design:
+// Database initialization
+const initDatabase = async () => {
+  try {
+    console.log("Starting database initialization...");
 
-1. Timestamp-based Sort Keys:
-   - SK="Product#2024-05-28T14:30:00Z#productId" (ISO timestamp)
-   - SK="Product#20240528143000#productId" (YYYYMMDDHHMMSS)
-   - Natural descending order with ScanIndexForward=false
+    // Drop existing tables if they exist (for clean slate)
+    await sql`DROP TABLE IF EXISTS users CASCADE`;
+    await sql`DROP TABLE IF EXISTS products CASCADE`;
+    await sql`DROP TABLE IF EXISTS items CASCADE`;
+    console.log("Dropped existing tables");
 
-2. Reverse Timestamp (for latest first):
-   - Use (9999999999999 - timestamp) for natural ascending = latest first
-   - SK="Product#7751471956999#productId"
+    // Create users table
+    await sql`
+      CREATE TABLE users (
+        id SERIAL PRIMARY KEY,
+        pk TEXT NOT NULL,
+        sk TEXT NOT NULL,
+        name TEXT,
+        email TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(pk, sk)
+      )
+    `;
+    console.log("Created users table");
 
-3. Dedicated Time-Series Pattern:
-   - PK="User#1#Products", SK="2024-05-28T14:30:00Z#productId"
-   - Separate partition for time-based queries
+    // Create products table
+    await sql`
+      CREATE TABLE products (
+        id SERIAL PRIMARY KEY,
+        pk TEXT NOT NULL,
+        sk TEXT NOT NULL,
+        product_id TEXT,
+        name TEXT,
+        price DECIMAL(10,2),
+        description TEXT,
+        created_at TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(pk, sk)
+      )
+    `;
+    console.log("Created products table");
 
-4. Global Secondary Index (GSI):
-   - GSI1PK="ProductsByUser#1", GSI1SK="2024-05-28T14:30:00Z"
-   - Enable different access patterns
+    // Create generic items table (for DynamoDB compatibility)
+    await sql`
+      CREATE TABLE items (
+        id SERIAL PRIMARY KEY,
+        pk TEXT NOT NULL,
+        sk TEXT NOT NULL,
+        entity_type TEXT,
+        data JSONB, -- JSON data
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(pk, sk)
+      )
+    `;
+    console.log("Created items table");
 
-Recommendation: Use ISO timestamp in SK for simplicity and readability
-*/
+    // Create indexes for better performance
+    await sql`CREATE INDEX idx_users_pk ON users(pk)`;
+    await sql`CREATE INDEX idx_users_sk ON users(sk)`;
+    await sql`CREATE INDEX idx_products_pk ON products(pk)`;
+    await sql`CREATE INDEX idx_products_sk ON products(sk)`;
+    await sql`CREATE INDEX idx_items_pk ON items(pk)`;
+    await sql`CREATE INDEX idx_items_sk ON items(sk)`;
+    await sql`CREATE INDEX idx_items_entity_type ON items(entity_type)`;
+    console.log("Created indexes");
 
-const client = new DynamoDBClient({
-  region: "me-central-1", // or your region
-  // Add explicit endpoint for local development if needed
-  // endpoint: "http://localhost:8000", // uncomment for DynamoDB Local
+    // Test query to verify tables exist
+    const testResult = await sql`SELECT COUNT(*) as count FROM users`;
+    console.log("Database test query successful:", testResult[0]);
 
-  // Add credentials explicitly if not using IAM roles
-  // credentials: {
-  //   accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
-  //   secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
-  // },
-});
+    console.log("Database initialized successfully");
+  } catch (error) {
+    console.error("Database initialization error:", error);
+    throw error; // Re-throw to stop server startup if DB init fails
+  }
+};
 
-// Test the connection
-console.log("DynamoDB client initialized for region:", client.config.region);
+// Helper functions for timestamp-based sort keys (DynamoDB compatibility)
+const createTimestampSK = (id: string, timestamp: string) => {
+  return `Product#${timestamp}#${id}`;
+};
 
-const MainTable = new Table({
-  // 👇 DynamoDB config.
-  name: "main",
-  partitionKey: { name: "PK", type: "string" },
-  sortKey: { name: "SK", type: "string" },
-  // 👇 Inject the client
-  documentClient: DynamoDBDocumentClient.from(client),
-});
+const createReverseTimestampSK = (id: string, timestamp: string) => {
+  // Create reverse timestamp for latest-first sorting
+  const reverseTimestamp = (
+    999999999999999 - new Date(timestamp).getTime()
+  ).toString();
+  return `Product#${reverseTimestamp}#${id}`;
+};
 
-const UserProfile = new Entity({
-  name: "UserProfile",
-  table: MainTable,
-  schema: item({
-    PK: string().key(),
-    SK: string().key(),
-    name: string(),
-  }),
-});
+// Initialize database and start server
+const startServer = async () => {
+  try {
+    // Initialize database first
+    await initDatabase();
 
-const Product = new Entity({
-  name: "Product",
-  table: MainTable,
-  schema: item({
-    PK: string().key(),
-    SK: string().key(),
-    productId: string(),
-    name: string(),
-    price: number().optional(),
-    description: string().optional(),
-    createdAt: string(), // ISO timestamp
-    updatedAt: string().optional(),
-  }),
-});
+    // Then start the server
+    const server = serve({
+      routes: {
+        // Serve index.html for all unmatched routes.
+        "/*": index,
 
-// Alternative Product entity for reverse timestamp approach
-const ProductReverse = new Entity({
-  name: "ProductReverse",
-  table: MainTable,
-  schema: item({
-    PK: string().key(),
-    SK: string().key(), // Format: "Product#{reverseTimestamp}#{productId}"
-    productId: string(),
-    name: string(),
-    price: number().optional(),
-    description: string().optional(),
-    createdAt: string(),
-    updatedAt: string().optional(),
-  }),
-});
+        // Generic API endpoint for all DynamoDB operations
+        "/api/query": async (req) => {
+          try {
+            const url = new URL(req.url);
+            const operation = url.searchParams.get("operation");
 
-// Helper functions for timestamp handling
-function createTimestampSK(productId: string, timestamp?: string): string {
-  const ts = timestamp || new Date().toISOString();
-  return `Product#${ts}#${productId}`;
-}
+            // Generic parameters
+            const entityType = url.searchParams.get("entityType"); // e.g., "User", "Product", "Order"
+            const entityId = url.searchParams.get("entityId"); // e.g., "1", "user123"
+            const targetEntity = url.searchParams.get("targetEntity"); // For related entities, e.g., "Product"
 
-function createReverseTimestampSK(
-  productId: string,
-  timestamp?: string
-): string {
-  const ts = timestamp || new Date().toISOString();
-  const reverseTs = (9999999999999 - new Date(ts).getTime())
-    .toString()
-    .padStart(13, "0");
-  return `Product#${reverseTs}#${productId}`;
-}
+            // Query options
+            const limit = parseInt(url.searchParams.get("limit") || "10");
+            const startKey = url.searchParams.get("startKey");
+            const reverse = url.searchParams.get("reverse") === "true";
+            const attributes = url.searchParams.get("attributes")?.split(",");
 
-const server = serve({
-  routes: {
-    // Serve index.html for all unmatched routes.
-    "/*": index,
+            // Time-based filtering
+            const startTime = url.searchParams.get("startTime");
+            const endTime = url.searchParams.get("endTime");
 
-    // Generic API endpoint for all DynamoDB operations
-    "/api/query": async (req) => {
-      try {
-        const url = new URL(req.url);
-        const operation = url.searchParams.get("operation");
+            // Range filtering (URL decode # characters)
+            const rangeStart = url.searchParams.get("rangeStart")
+              ? decodeURIComponent(url.searchParams.get("rangeStart")!)
+              : null;
+            const rangeEnd = url.searchParams.get("rangeEnd")
+              ? decodeURIComponent(url.searchParams.get("rangeEnd")!)
+              : null;
+            const rangePrefix = url.searchParams.get("rangePrefix")
+              ? decodeURIComponent(url.searchParams.get("rangePrefix")!)
+              : null;
 
-        // Generic parameters
-        const entityType = url.searchParams.get("entityType"); // e.g., "User", "Product", "Order"
-        const entityId = url.searchParams.get("entityId"); // e.g., "1", "user123"
-        const targetEntity = url.searchParams.get("targetEntity"); // For related entities, e.g., "Product"
+            // Custom partition and sort key patterns (URL decode # characters)
+            const partitionKey = url.searchParams.get("partitionKey")
+              ? decodeURIComponent(url.searchParams.get("partitionKey")!)
+              : null;
+            const sortKeyPattern = url.searchParams.get("sortKeyPattern")
+              ? decodeURIComponent(url.searchParams.get("sortKeyPattern")!)
+              : null;
 
-        // Query options
-        const limit = parseInt(url.searchParams.get("limit") || "10");
-        const startKey = url.searchParams.get("startKey");
-        const reverse = url.searchParams.get("reverse") === "true";
-        const attributes = url.searchParams.get("attributes")?.split(",");
+            const perfTracker = createPerformanceTracker();
 
-        // Time-based filtering
-        const startTime = url.searchParams.get("startTime");
-        const endTime = url.searchParams.get("endTime");
+            switch (operation) {
+              case "getItem": {
+                // Get a single item by exact PK/SK
+                if (!partitionKey) {
+                  return Response.json(
+                    { error: "partitionKey is required for getItem operation" },
+                    { status: 400 }
+                  );
+                }
 
-        // Range filtering (URL decode # characters)
-        const rangeStart = url.searchParams.get("rangeStart")
-          ? decodeURIComponent(url.searchParams.get("rangeStart")!)
-          : null;
-        const rangeEnd = url.searchParams.get("rangeEnd")
-          ? decodeURIComponent(url.searchParams.get("rangeEnd")!)
-          : null;
-        const rangePrefix = url.searchParams.get("rangePrefix")
-          ? decodeURIComponent(url.searchParams.get("rangePrefix")!)
-          : null;
+                const sortKey = url.searchParams.get("sortKey")
+                  ? decodeURIComponent(url.searchParams.get("sortKey")!)
+                  : "Profile";
 
-        // Custom partition and sort key patterns (URL decode # characters)
-        const partitionKey = url.searchParams.get("partitionKey")
-          ? decodeURIComponent(url.searchParams.get("partitionKey")!)
-          : null;
-        const sortKeyPattern = url.searchParams.get("sortKeyPattern")
-          ? decodeURIComponent(url.searchParams.get("sortKeyPattern")!)
-          : null;
+                perfTracker.startProcessing();
 
-        const time = performance.now();
+                // Query from appropriate table based on sort key
+                let item = null;
 
-        switch (operation) {
-          case "getItem": {
-            // Get a single item by exact PK/SK
-            if (!partitionKey) {
-              return Response.json(
-                { error: "partitionKey is required for getItem operation" },
-                { status: 400 }
-              );
-            }
+                perfTracker.startDbQuery();
+                if (sortKey === "Profile") {
+                  // User profile from users table
+                  const result = await sql`
+                SELECT * FROM users 
+                WHERE pk = ${partitionKey} AND sk = ${sortKey}
+                LIMIT 1
+              `;
+                  item = result[0] || null;
+                } else if (sortKey.startsWith("Product#")) {
+                  // Product from products table
+                  const result = await sql`
+                SELECT * FROM products 
+                WHERE pk = ${partitionKey} AND sk = ${sortKey}
+                LIMIT 1
+              `;
+                  item = result[0] || null;
+                } else {
+                  // Generic item from items table
+                  const result = await sql`
+                SELECT *, data as json_data FROM items 
+                WHERE pk = ${partitionKey} AND sk = ${sortKey}
+                LIMIT 1
+              `;
+                  if (result[0]) {
+                    item = { ...result[0], ...(result[0].json_data || {}) };
+                    delete item.data;
+                    delete item.json_data;
+                  }
+                }
+                perfTracker.endDbQuery();
+                perfTracker.endProcessing();
 
-            const sortKey = url.searchParams.get("sortKey")
-              ? decodeURIComponent(url.searchParams.get("sortKey")!)
-              : "Profile";
+                perfTracker.startSerialization();
+                const responseData = {
+                  operation: "getItem",
+                  partitionKey,
+                  sortKey,
+                  data: item,
+                  found: !!item,
+                };
+                perfTracker.endSerialization();
 
-            const command = MainTable.build(QueryCommand)
-              .query({
-                partition: partitionKey,
-                range: { eq: sortKey },
-              })
-              .options({
-                limit: 1,
-                ...(attributes && { attributes }),
-              });
-
-            const response = await command.send();
-            const item = response.Items?.[0] || null;
-
-            console.log(`GetItem query took ${performance.now() - time}ms`);
-
-            return Response.json({
-              operation: "getItem",
-              partitionKey,
-              sortKey,
-              data: item,
-              found: !!item,
-            });
-          }
-
-          case "query": {
-            // Generic query operation
-            if (!partitionKey) {
-              return Response.json(
-                { error: "partitionKey is required for query operation" },
-                { status: 400 }
-              );
-            }
-
-            let queryBuilder = MainTable.build(QueryCommand)
-              .query({
-                partition: partitionKey,
-                ...(sortKeyPattern && {
-                  range: { beginsWith: sortKeyPattern },
-                }),
-                ...(rangeStart &&
-                  rangeEnd && {
-                    range: { between: [rangeStart, rangeEnd] },
-                  }),
-                ...(reverse !== undefined && { reverse }),
-              })
-              .options({
-                limit,
-                ...(startKey && {
-                  exclusiveStartKey: JSON.parse(decodeURIComponent(startKey)),
-                }),
-                ...(attributes && { attributes }),
-              });
-
-            const response = await queryBuilder.send();
-            console.log(`Query took ${performance.now() - time}ms`);
-
-            const result: any = {
-              operation: "query",
-              partitionKey,
-              sortKeyPattern,
-              data: response.Items || [],
-              count: response.Count || 0,
-              scannedCount: response.ScannedCount || 0,
-              queryOptions: {
-                limit,
-                reverse,
-                attributes,
-                rangeStart,
-                rangeEnd,
-              },
-            };
-
-            if (response.LastEvaluatedKey) {
-              result.nextStartKey = encodeURIComponent(
-                JSON.stringify(response.LastEvaluatedKey)
-              );
-            }
-
-            return Response.json(result);
-          }
-
-          case "queryRelated": {
-            // Query related entities for a parent entity
-            if (!entityType || !entityId || !targetEntity) {
-              return Response.json(
-                {
-                  error:
-                    "entityType, entityId, and targetEntity are required for queryRelated",
-                },
-                { status: 400 }
-              );
-            }
-
-            const pk = `${entityType}#${entityId}`;
-            const skPrefix = `${targetEntity}#`;
-
-            let queryBuilder = MainTable.build(QueryCommand)
-              .query({
-                partition: pk,
-                range: { beginsWith: skPrefix },
-                ...(reverse !== undefined && { reverse }),
-              })
-              .options({
-                limit,
-                ...(startKey && {
-                  exclusiveStartKey: JSON.parse(decodeURIComponent(startKey)),
-                }),
-                ...(attributes && { attributes }),
-              });
-
-            const response = await queryBuilder.send();
-            console.log(`QueryRelated took ${performance.now() - time}ms`);
-
-            const result: any = {
-              operation: "queryRelated",
-              entityType,
-              entityId,
-              targetEntity,
-              data: response.Items || [],
-              count: response.Count || 0,
-              scannedCount: response.ScannedCount || 0,
-            };
-
-            if (response.LastEvaluatedKey) {
-              result.nextStartKey = encodeURIComponent(
-                JSON.stringify(response.LastEvaluatedKey)
-              );
-            }
-
-            return Response.json(result);
-          }
-
-          case "queryTimeRange": {
-            // Query entities within a time range
-            if (!partitionKey || !startTime || !endTime) {
-              return Response.json(
-                {
-                  error:
-                    "partitionKey, startTime, and endTime are required for queryTimeRange",
-                },
-                { status: 400 }
-              );
-            }
-
-            const prefix = rangePrefix || "";
-            const command = MainTable.build(QueryCommand)
-              .query({
-                partition: partitionKey,
-                range: {
-                  between: [`${prefix}${startTime}`, `${prefix}${endTime}`],
-                },
-              })
-              .options({
-                limit,
-                ...(attributes && { attributes }),
-              });
-
-            const response = await command.send();
-            console.log(`Time range query took ${performance.now() - time}ms`);
-
-            return Response.json({
-              operation: "queryTimeRange",
-              partitionKey,
-              timeRange: { startTime, endTime },
-              rangePrefix,
-              data: response.Items || [],
-              count: response.Count || 0,
-            });
-          }
-
-          case "queryAll": {
-            // Get all items for an entity (e.g., profile + all related entities)
-            if (!entityType || !entityId) {
-              return Response.json(
-                { error: "entityType and entityId are required for queryAll" },
-                { status: 400 }
-              );
-            }
-
-            const pk = `${entityType}#${entityId}`;
-            const command = MainTable.build(QueryCommand)
-              .query({
-                partition: pk,
-                ...(reverse !== undefined && { reverse }),
-              })
-              .options({
-                limit,
-                ...(attributes && { attributes }),
-              });
-
-            const response = await command.send();
-            console.log(`QueryAll took ${performance.now() - time}ms`);
-
-            // Group items by entity type for easier frontend consumption
-            const groupedData: Record<string, any[]> = {};
-            const profile = response.Items?.find(
-              (item) => item.SK === "Profile"
-            );
-
-            response.Items?.forEach((item) => {
-              if (item.SK === "Profile") return; // Handle profile separately
-
-              const skParts = (item.SK as string).split("#");
-              const entityType = skParts[0];
-
-              if (!groupedData[entityType]) {
-                groupedData[entityType] = [];
+                const metrics = perfTracker.finish();
+                return createTimedResponse(responseData, metrics, "getItem");
               }
-              groupedData[entityType].push(item);
-            });
 
-            return Response.json({
-              operation: "queryAll",
-              entityType,
-              entityId,
-              data: {
-                profile,
-                related: groupedData,
-                raw: response.Items || [],
-              },
-              count: response.Count || 0,
-              totalItems: response.Count || 0,
-            });
-          }
+              case "query": {
+                // Generic query operation
+                if (!partitionKey) {
+                  return Response.json(
+                    { error: "partitionKey is required for query operation" },
+                    { status: 400 }
+                  );
+                }
 
-          case "scan": {
-            // Generic scan operation (use sparingly!)
-            const filterExpression = url.searchParams.get("filterExpression");
-            const { ScanCommand } = await import(
-              "dynamodb-toolbox/table/actions/scan"
-            );
+                // Build SQL query based on parameters
+                let whereClause = `pk = ${partitionKey}`;
+                const params: any[] = [];
 
-            let scanBuilder = MainTable.build(ScanCommand).options({
-              limit,
-              ...(startKey && {
-                exclusiveStartKey: JSON.parse(decodeURIComponent(startKey)),
-              }),
-              ...(attributes && { attributes }),
-            });
+                if (sortKeyPattern) {
+                  whereClause += ` AND sk LIKE ?`;
+                  params.push(`${sortKeyPattern}%`);
+                }
 
-            const response = await scanBuilder.send();
-            console.log(`Scan took ${performance.now() - time}ms`);
+                if (rangeStart && rangeEnd) {
+                  whereClause += ` AND sk BETWEEN ? AND ?`;
+                  params.push(rangeStart, rangeEnd);
+                }
 
-            const result: any = {
-              operation: "scan",
-              data: response.Items || [],
-              count: response.Count || 0,
-              scannedCount: response.ScannedCount || 0,
-              warning:
-                "Scan operations are expensive - use query when possible",
-            };
+                // Determine which table(s) to query
+                let results: any[] = [];
 
-            if (response.LastEvaluatedKey) {
-              result.nextStartKey = encodeURIComponent(
-                JSON.stringify(response.LastEvaluatedKey)
-              );
+                if (!sortKeyPattern || sortKeyPattern === "Profile") {
+                  // Query users table
+                  const userResults = await sql`
+                SELECT * FROM users 
+                WHERE pk = ${partitionKey}
+                ${sortKeyPattern ? sql`AND sk LIKE ${sortKeyPattern + "%"}` : sql``}
+                ${reverse ? sql`ORDER BY sk DESC` : sql`ORDER BY sk ASC`}
+                LIMIT ${limit}
+              `;
+                  results.push(...userResults);
+                }
+
+                if (!sortKeyPattern || sortKeyPattern.startsWith("Product")) {
+                  // Query products table
+                  const productResults = await sql`
+                SELECT * FROM products 
+                WHERE pk = ${partitionKey}
+                ${sortKeyPattern ? sql`AND sk LIKE ${sortKeyPattern + "%"}` : sql`AND sk LIKE 'Product#%'`}
+                ${reverse ? sql`ORDER BY sk DESC` : sql`ORDER BY sk ASC`}
+                LIMIT ${limit}
+              `;
+                  results.push(...productResults);
+                }
+
+                // Query generic items table if needed
+                if (
+                  !sortKeyPattern ||
+                  (!sortKeyPattern.startsWith("Product") &&
+                    sortKeyPattern !== "Profile")
+                ) {
+                  const itemResults = await sql`
+                SELECT * FROM items 
+                WHERE pk = ${partitionKey}
+                ${sortKeyPattern ? sql`AND sk LIKE ${sortKeyPattern + "%"}` : sql``}
+                ${reverse ? sql`ORDER BY sk DESC` : sql`ORDER BY sk ASC`}
+                LIMIT ${limit}
+              `;
+
+                  // Parse JSON data for generic items
+                  const parsedItems = itemResults
+                    .map((item) => ({
+                      ...item,
+                      ...(item.json_data || {}),
+                    }))
+                    .map((item) => {
+                      delete item.data;
+                      delete item.json_data;
+                      return item;
+                    });
+
+                  results.push(...parsedItems);
+                }
+
+                // Sort and limit results
+                results.sort((a, b) => {
+                  if (reverse) {
+                    return b.sk.localeCompare(a.sk);
+                  }
+                  return a.sk.localeCompare(b.sk);
+                });
+
+                results = results.slice(0, limit);
+
+                // Performance logging is handled by perfTracker
+
+                const result: any = {
+                  operation: "query",
+                  partitionKey,
+                  sortKeyPattern,
+                  data: results,
+                  count: results.length,
+                  scannedCount: results.length,
+                  queryOptions: {
+                    limit,
+                    reverse,
+                    attributes,
+                    rangeStart,
+                    rangeEnd,
+                  },
+                };
+
+                // Simple pagination - in production you'd want cursor-based pagination
+                if (results.length === limit) {
+                  result.nextStartKey = encodeURIComponent(
+                    JSON.stringify({
+                      pk: partitionKey,
+                      sk: results[results.length - 1].sk,
+                    })
+                  );
+                }
+
+                return Response.json(result);
+              }
+
+              case "queryRelated": {
+                // Query related entities for a parent entity
+                if (!entityType || !entityId || !targetEntity) {
+                  return Response.json(
+                    {
+                      error:
+                        "entityType, entityId, and targetEntity are required for queryRelated",
+                    },
+                    { status: 400 }
+                  );
+                }
+
+                const pk = `${entityType}#${entityId}`;
+                const skPrefix = `${targetEntity}#`;
+
+                // Query appropriate table based on target entity
+                let results: any[] = [];
+
+                if (targetEntity === "Product") {
+                  results = await sql`
+                SELECT * FROM products 
+                WHERE pk = ${pk} AND sk LIKE ${skPrefix + "%"}
+                ${reverse ? sql`ORDER BY sk DESC` : sql`ORDER BY sk ASC`}
+                LIMIT ${limit}
+              `;
+                } else if (targetEntity === "User") {
+                  results = await sql`
+                SELECT * FROM users 
+                WHERE pk = ${pk} AND sk LIKE ${skPrefix + "%"}
+                ${reverse ? sql`ORDER BY sk DESC` : sql`ORDER BY sk ASC`}
+                LIMIT ${limit}
+              `;
+                } else {
+                  // Query generic items table
+                  const itemResults = await sql`
+                SELECT *, data as json_data FROM items 
+                WHERE pk = ${pk} AND sk LIKE ${skPrefix + "%"}
+                ${reverse ? sql`ORDER BY sk DESC` : sql`ORDER BY sk ASC`}
+                LIMIT ${limit}
+              `;
+
+                  results = itemResults
+                    .map((item) => ({
+                      ...item,
+                      ...(item.json_data || {}),
+                    }))
+                    .map((item) => {
+                      delete item.data;
+                      delete item.json_data;
+                      return item;
+                    });
+                }
+
+                // Performance logging is handled by perfTracker
+
+                const result: any = {
+                  operation: "queryRelated",
+                  entityType,
+                  entityId,
+                  targetEntity,
+                  data: results,
+                  count: results.length,
+                  scannedCount: results.length,
+                };
+
+                if (results.length === limit) {
+                  result.nextStartKey = encodeURIComponent(
+                    JSON.stringify({ pk, sk: results[results.length - 1].sk })
+                  );
+                }
+
+                return Response.json(result);
+              }
+
+              case "queryTimeRange": {
+                // Query entities within a time range
+                if (!partitionKey || !startTime || !endTime) {
+                  return Response.json(
+                    {
+                      error:
+                        "partitionKey, startTime, and endTime are required for queryTimeRange",
+                    },
+                    { status: 400 }
+                  );
+                }
+
+                const prefix = rangePrefix || "";
+                const startRange = `${prefix}${startTime}`;
+                const endRange = `${prefix}${endTime}`;
+
+                // Query all tables for time-based data
+                const [userResults, productResults, itemResults] =
+                  await Promise.all([
+                    sql`
+                SELECT * FROM users 
+                WHERE pk = ${partitionKey} 
+                AND sk BETWEEN ${startRange} AND ${endRange}
+                LIMIT ${limit}
+              `,
+                    sql`
+                SELECT * FROM products 
+                WHERE pk = ${partitionKey} 
+                AND sk BETWEEN ${startRange} AND ${endRange}
+                LIMIT ${limit}
+              `,
+                    sql`
+                SELECT *, data as json_data FROM items 
+                WHERE pk = ${partitionKey} 
+                AND sk BETWEEN ${startRange} AND ${endRange}
+                LIMIT ${limit}
+              `,
+                  ]);
+
+                // Combine and parse results
+                const parsedItems = itemResults
+                  .map((item) => ({
+                    ...item,
+                    ...(item.json_data || {}),
+                  }))
+                  .map((item) => {
+                    delete item.data;
+                    delete item.json_data;
+                    return item;
+                  });
+
+                const allResults = [
+                  ...userResults,
+                  ...productResults,
+                  ...parsedItems,
+                ];
+
+                // Sort by sort key
+                allResults.sort((a, b) => a.sk.localeCompare(b.sk));
+                const results = allResults.slice(0, limit);
+
+                // Performance logging is handled by perfTracker
+
+                return Response.json({
+                  operation: "queryTimeRange",
+                  partitionKey,
+                  timeRange: { startTime, endTime },
+                  rangePrefix,
+                  data: results,
+                  count: results.length,
+                });
+              }
+
+              case "queryAll": {
+                // Get all items for an entity (e.g., profile + all related entities)
+                if (!entityType || !entityId) {
+                  return Response.json(
+                    {
+                      error:
+                        "entityType and entityId are required for queryAll",
+                    },
+                    { status: 400 }
+                  );
+                }
+
+                const pk = `${entityType}#${entityId}`;
+
+                // Query all tables for this partition key
+                const [userResults, productResults, itemResults] =
+                  await Promise.all([
+                    sql`
+                SELECT * FROM users 
+                WHERE pk = ${pk}
+                ${reverse ? sql`ORDER BY sk DESC` : sql`ORDER BY sk ASC`}
+                LIMIT ${limit}
+              `,
+                    sql`
+                SELECT * FROM products 
+                WHERE pk = ${pk}
+                ${reverse ? sql`ORDER BY sk DESC` : sql`ORDER BY sk ASC`}
+                LIMIT ${limit}
+              `,
+                    sql`
+                SELECT *, data as json_data FROM items 
+                WHERE pk = ${pk}
+                ${reverse ? sql`ORDER BY sk DESC` : sql`ORDER BY sk ASC`}
+                LIMIT ${limit}
+              `,
+                  ]);
+
+                // Parse generic items
+                const parsedItems = itemResults
+                  .map((item) => ({
+                    ...item,
+                    ...(item.json_data || {}),
+                  }))
+                  .map((item) => {
+                    delete item.data;
+                    delete item.json_data;
+                    return item;
+                  });
+
+                // Combine all results
+                const allItems = [
+                  ...userResults,
+                  ...productResults,
+                  ...parsedItems,
+                ];
+
+                // Sort by sort key
+                allItems.sort((a, b) => {
+                  if (reverse) {
+                    return b.sk.localeCompare(a.sk);
+                  }
+                  return a.sk.localeCompare(b.sk);
+                });
+
+                // Performance logging is handled by perfTracker
+
+                // Group items by entity type for easier frontend consumption
+                const groupedData: Record<string, any[]> = {};
+                const profile = allItems.find((item) => item.sk === "Profile");
+
+                allItems.forEach((item) => {
+                  if (item.sk === "Profile") return; // Handle profile separately
+
+                  const skParts = (item.sk as string).split("#");
+                  const entityType = skParts[0];
+
+                  if (!groupedData[entityType]) {
+                    groupedData[entityType] = [];
+                  }
+                  groupedData[entityType].push(item);
+                });
+
+                return Response.json({
+                  operation: "queryAll",
+                  entityType,
+                  entityId,
+                  data: {
+                    profile,
+                    related: groupedData,
+                    raw: allItems,
+                  },
+                  count: allItems.length,
+                  totalItems: allItems.length,
+                });
+              }
+
+              case "scan": {
+                // Generic scan operation (use sparingly!)
+                const filterExpression =
+                  url.searchParams.get("filterExpression");
+
+                // Query all tables - this is expensive!
+                const [userResults, productResults, itemResults] =
+                  await Promise.all([
+                    sql`
+                SELECT * FROM users 
+                LIMIT ${limit}
+              `,
+                    sql`
+                SELECT * FROM products 
+                LIMIT ${limit}
+              `,
+                    sql`
+                SELECT *, data as json_data FROM items 
+                LIMIT ${limit}
+              `,
+                  ]);
+
+                // Parse generic items
+                const parsedItems = itemResults
+                  .map((item) => ({
+                    ...item,
+                    ...(item.json_data || {}),
+                  }))
+                  .map((item) => {
+                    delete item.data;
+                    delete item.json_data;
+                    return item;
+                  });
+
+                // Combine all results
+                const allResults = [
+                  ...userResults,
+                  ...productResults,
+                  ...parsedItems,
+                ];
+                const results = allResults.slice(0, limit);
+
+                // Performance logging is handled by perfTracker
+
+                const result: any = {
+                  operation: "scan",
+                  data: results,
+                  count: results.length,
+                  scannedCount: results.length,
+                  warning:
+                    "Scan operations are expensive - use query when possible",
+                };
+
+                if (results.length === limit) {
+                  result.nextStartKey = encodeURIComponent(
+                    JSON.stringify({
+                      pk: results[results.length - 1].pk,
+                      sk: results[results.length - 1].sk,
+                    })
+                  );
+                }
+
+                return Response.json(result);
+              }
+
+              default:
+                return Response.json(
+                  {
+                    error: "Invalid operation",
+                    supportedOperations: {
+                      getItem: "Get single item by PK/SK",
+                      query:
+                        "Query items with partition key and optional range conditions",
+                      queryRelated:
+                        "Query related entities for a parent entity",
+                      queryTimeRange: "Query items within a time range",
+                      queryAll:
+                        "Get all items for an entity (profile + related)",
+                      scan: "Scan table (use sparingly!)",
+                    },
+                    parameters: {
+                      required: ["operation"],
+                      optional: [
+                        "entityType",
+                        "entityId",
+                        "targetEntity",
+                        "partitionKey",
+                        "sortKey",
+                        "sortKeyPattern",
+                        "limit",
+                        "startKey",
+                        "reverse",
+                        "attributes",
+                        "startTime",
+                        "endTime",
+                        "rangeStart",
+                        "rangeEnd",
+                        "rangePrefix",
+                      ],
+                    },
+                  },
+                  { status: 400 }
+                );
             }
-
-            return Response.json(result);
-          }
-
-          default:
+          } catch (error) {
+            console.error("Query error:", error);
             return Response.json(
               {
-                error: "Invalid operation",
-                supportedOperations: {
-                  getItem: "Get single item by PK/SK",
-                  query:
-                    "Query items with partition key and optional range conditions",
-                  queryRelated: "Query related entities for a parent entity",
-                  queryTimeRange: "Query items within a time range",
-                  queryAll: "Get all items for an entity (profile + related)",
-                  scan: "Scan table (use sparingly!)",
-                },
-                parameters: {
-                  required: ["operation"],
-                  optional: [
-                    "entityType",
-                    "entityId",
-                    "targetEntity",
-                    "partitionKey",
-                    "sortKey",
-                    "sortKeyPattern",
-                    "limit",
-                    "startKey",
-                    "reverse",
-                    "attributes",
-                    "startTime",
-                    "endTime",
-                    "rangeStart",
-                    "rangeEnd",
-                    "rangePrefix",
+                error: "Failed to execute query",
+                details: error.message,
+                operation:
+                  new URL(req.url).searchParams.get("operation") || "unknown",
+              },
+              { status: 500 }
+            );
+          }
+        },
+
+        // Create test data endpoint
+        "/api/seed": {
+          async POST(req) {
+            try {
+              // Create a user profile
+              await sql`
+            INSERT OR REPLACE INTO users (pk, sk, name)
+            VALUES (${"User#1"}, ${"Profile"}, ${"John Doe"})
+          `;
+
+              // Create some products for the user with timestamp-based sort keys
+              const now = new Date();
+              const timestamp1 = new Date(
+                now.getTime() - 3600000
+              ).toISOString(); // 1 hour ago
+              const timestamp2 = new Date(
+                now.getTime() - 1800000
+              ).toISOString(); // 30 min ago
+              const timestamp3 = new Date().toISOString(); // now
+
+              const product1SK = createTimestampSK("1", timestamp1);
+              const product2SK = createTimestampSK("2", timestamp2);
+              const product3SK = createReverseTimestampSK("3", timestamp3);
+
+              // Insert products
+              await Promise.all([
+                sql`
+              INSERT OR REPLACE INTO products (pk, sk, product_id, name, price, description, created_at)
+              VALUES (${"User#1"}, ${product1SK}, ${"1"}, ${"Laptop"}, ${999.99}, ${"High-performance laptop"}, ${timestamp1})
+            `,
+                sql`
+              INSERT OR REPLACE INTO products (pk, sk, product_id, name, price, description, created_at)
+              VALUES (${"User#1"}, ${product2SK}, ${"2"}, ${"Mouse"}, ${29.99}, ${"Wireless mouse"}, ${timestamp2})
+            `,
+                sql`
+              INSERT OR REPLACE INTO products (pk, sk, product_id, name, price, description, created_at)
+              VALUES (${"User#1"}, ${product3SK}, ${"3"}, ${"Keyboard"}, ${79.99}, ${"Mechanical keyboard"}, ${timestamp3})
+            `,
+              ]);
+
+              return Response.json({
+                message: "Test data created successfully",
+                created: {
+                  profile: "User#1 Profile",
+                  products: [
+                    `User#1 ${product1SK}`,
+                    `User#1 ${product2SK}`,
+                    `User#1 ${product3SK}`,
                   ],
                 },
-              },
-              { status: 400 }
-            );
-        }
-      } catch (error) {
-        console.error("Query error:", error);
-        return Response.json(
-          {
-            error: "Failed to execute query",
-            details: error.message,
-            operation:
-              new URL(req.url).searchParams.get("operation") || "unknown",
+                timestamps: {
+                  product1: timestamp1,
+                  product2: timestamp2,
+                  product3: timestamp3,
+                },
+              });
+            } catch (error) {
+              console.error("Seed error:", error);
+              return Response.json(
+                {
+                  error: "Failed to create test data",
+                  details: error.message,
+                },
+                { status: 500 }
+              );
+            }
           },
-          { status: 500 }
-        );
-      }
+        },
+
+        "/api/amazon/:keyword/:limit": async (req) => {
+          const { keyword, limit } = req.params;
+          const results = await searchAmazon(keyword, Number(limit));
+          return Response.json(results);
+        },
+
+        "/api/test": async (req) => {
+          const users = await sql`
+        SELECT * FROM users
+        WHERE active = ${true}
+        LIMIT ${10}
+      `;
+          return Response.json(users);
+        },
+
+        // Performance test page
+        "/performance": async (req) => {
+          const performanceHtml = await Bun.file(
+            "./performance-test.html"
+          ).text();
+          return new Response(performanceHtml, {
+            headers: { "Content-Type": "text/html" },
+          });
+        },
+
+        // Handle Amazon route
+      },
+
+      development: process.env.NODE_ENV !== "production" && {
+        // Enable browser hot reloading in development
+        hmr: true,
+
+        // Echo console logs from the browser to the server
+        console: true,
+      },
+      port: 3000,
+    });
+
+    console.log(`🚀 Server running at ${server.url}`);
+    return server;
+  } catch (error) {
+    console.error("Failed to start server:", error);
+    process.exit(1);
+  }
+};
+
+// Performance monitoring utilities
+interface PerformanceMetrics {
+  requestStart: number;
+  dbQueryStart?: number;
+  dbQueryEnd?: number;
+  processingStart?: number;
+  processingEnd?: number;
+  serializationStart?: number;
+  serializationEnd?: number;
+  requestEnd: number;
+  totalTime: number;
+  dbTime?: number;
+  processingTime?: number;
+  serializationTime?: number;
+}
+
+const createPerformanceTracker = () => {
+  const metrics: PerformanceMetrics = {
+    requestStart: performance.now(),
+    requestEnd: 0,
+    totalTime: 0,
+  };
+
+  return {
+    startDbQuery: () => {
+      metrics.dbQueryStart = performance.now();
     },
+    endDbQuery: () => {
+      metrics.dbQueryEnd = performance.now();
+      metrics.dbTime = metrics.dbQueryEnd - (metrics.dbQueryStart || 0);
+    },
+    startProcessing: () => {
+      metrics.processingStart = performance.now();
+    },
+    endProcessing: () => {
+      metrics.processingEnd = performance.now();
+      metrics.processingTime =
+        metrics.processingEnd - (metrics.processingStart || 0);
+    },
+    startSerialization: () => {
+      metrics.serializationStart = performance.now();
+    },
+    endSerialization: () => {
+      metrics.serializationEnd = performance.now();
+      metrics.serializationTime =
+        metrics.serializationEnd - (metrics.serializationStart || 0);
+    },
+    finish: () => {
+      metrics.requestEnd = performance.now();
+      metrics.totalTime = metrics.requestEnd - metrics.requestStart;
+      return metrics;
+    },
+    getMetrics: () => metrics,
+  };
+};
 
-    // Create test data endpoint
-    "/api/seed": {
-      async POST(req) {
-        try {
-          // Import PutItemCommand for creating items
-          const { PutItemCommand } = await import(
-            "dynamodb-toolbox/entity/actions/put"
-          );
-
-          // Create a user profile
-          const profileCommand = UserProfile.build(PutItemCommand).item({
-            PK: "User#1",
-            SK: "Profile",
-            name: "John Doe",
-          });
-
-          // Create some products for the user with timestamp-based sort keys
-          const now = new Date();
-          const timestamp1 = new Date(now.getTime() - 3600000).toISOString(); // 1 hour ago
-          const timestamp2 = new Date(now.getTime() - 1800000).toISOString(); // 30 min ago
-          const timestamp3 = new Date().toISOString(); // now
-
-          const product1Command = Product.build(PutItemCommand).item({
-            PK: "User#1",
-            SK: createTimestampSK("1", timestamp1), // "Product#2024-05-28T13:30:00Z#1"
-            productId: "1",
-            name: "Laptop",
-            price: 999.99,
-            description: "High-performance laptop",
-            createdAt: timestamp1,
-          });
-
-          const product2Command = Product.build(PutItemCommand).item({
-            PK: "User#1",
-            SK: createTimestampSK("2", timestamp2), // "Product#2024-05-28T14:00:00Z#2"
-            productId: "2",
-            name: "Mouse",
-            price: 29.99,
-            description: "Wireless mouse",
-            createdAt: timestamp2,
-          });
-
-          // Create product with reverse timestamp for latest-first sorting
-          const product3Command = ProductReverse.build(PutItemCommand).item({
-            PK: "User#1",
-            SK: createReverseTimestampSK("3", timestamp3), // "Product#7751471956999#3"
-            productId: "3",
-            name: "Keyboard",
-            price: 79.99,
-            description: "Mechanical keyboard",
-            createdAt: timestamp3,
-          });
-
-          // Execute all commands
-          await Promise.all([
-            profileCommand.send(),
-            product1Command.send(),
-            product2Command.send(),
-            product3Command.send(),
-          ]);
-
-          return Response.json({
-            message: "Test data created successfully",
-            created: {
-              profile: "User#1 Profile",
-              products: [
-                `User#1 ${createTimestampSK("1", timestamp1)}`,
-                `User#1 ${createTimestampSK("2", timestamp2)}`,
-                `User#1 ${createReverseTimestampSK("3", timestamp3)}`,
-              ],
-            },
-            timestamps: {
-              product1: timestamp1,
-              product2: timestamp2,
-              product3: timestamp3,
-            },
-          });
-        } catch (error) {
-          console.error("Seed error:", error);
-          return Response.json(
-            {
-              error: "Failed to create test data",
-              details: error.message,
-            },
-            { status: 500 }
-          );
-        }
+// Enhanced Response helper with performance data
+const createTimedResponse = (
+  data: any,
+  metrics: PerformanceMetrics,
+  operation: string
+) => {
+  const responseData = {
+    ...data,
+    performance: {
+      operation,
+      timing: {
+        total: `${metrics.totalTime.toFixed(2)}ms`,
+        database: metrics.dbTime ? `${metrics.dbTime.toFixed(2)}ms` : "N/A",
+        processing: metrics.processingTime
+          ? `${metrics.processingTime.toFixed(2)}ms`
+          : "N/A",
+        serialization: metrics.serializationTime
+          ? `${metrics.serializationTime.toFixed(2)}ms`
+          : "N/A",
+      },
+      breakdown: {
+        totalMs: parseFloat(metrics.totalTime.toFixed(2)),
+        databaseMs: metrics.dbTime ? parseFloat(metrics.dbTime.toFixed(2)) : 0,
+        processingMs: metrics.processingTime
+          ? parseFloat(metrics.processingTime.toFixed(2))
+          : 0,
+        serializationMs: metrics.serializationTime
+          ? parseFloat(metrics.serializationTime.toFixed(2))
+          : 0,
+      },
+      metadata: {
+        timestamp: new Date().toISOString(),
+        server: "bun-sql",
+        version: "1.0.0",
       },
     },
+  };
 
-    "/api/amazon/:keyword/:limit": async (req) => {
-      const { keyword, limit } = req.params;
-      const results = await searchAmazon(keyword, Number(limit));
-      return Response.json(results);
+  // Log performance metrics
+  console.log(
+    `[${operation}] Total: ${metrics.totalTime.toFixed(2)}ms | DB: ${metrics.dbTime?.toFixed(2) || "N/A"}ms | Processing: ${metrics.processingTime?.toFixed(2) || "N/A"}ms`
+  );
+
+  return Response.json(responseData, {
+    headers: {
+      "X-Response-Time": `${metrics.totalTime.toFixed(2)}ms`,
+      "X-DB-Time": `${metrics.dbTime?.toFixed(2) || 0}ms`,
+      "X-Processing-Time": `${metrics.processingTime?.toFixed(2) || 0}ms`,
+      "Server-Timing": `total;dur=${metrics.totalTime.toFixed(2)}, db;dur=${metrics.dbTime?.toFixed(2) || 0}, processing;dur=${metrics.processingTime?.toFixed(2) || 0}`,
+      "Access-Control-Expose-Headers":
+        "X-Response-Time, X-DB-Time, X-Processing-Time, Server-Timing",
     },
-    // Handle Amazon route
-  },
-
-  development: process.env.NODE_ENV !== "production" && {
-    // Enable browser hot reloading in development
-    hmr: true,
-
-    // Echo console logs from the browser to the server
-    console: true,
-  },
-  port: 3000,
-});
-
-/*
-Generic Single Table Design API:
-
-Single endpoint: GET /api/query
-
-This API is designed to work with any entity type and relationship pattern in a single DynamoDB table.
-
-⚠️ **Important**: When using # characters in URL parameters, they must be URL-encoded as %23
-
-Core Parameters:
-- operation (required): Type of query operation
-- entityType: The main entity type (e.g., "User", "Order", "Product")
-- entityId: The specific entity identifier
-- targetEntity: For related queries, the type of related entity to fetch
-
-Query Options:
-- limit: Maximum number of items to return (default: 10)
-- startKey: For pagination (URL-encoded JSON)
-- reverse: true/false for sort order
-- attributes: Comma-separated list of attributes to return
-
-Range/Filter Options:
-- partitionKey: Custom partition key for direct queries (URL-encode # as %23)
-- sortKey: Exact sort key for getItem operations (URL-encode # as %23)
-- sortKeyPattern: Prefix pattern for range queries (URL-encode # as %23)
-- rangeStart/rangeEnd: Custom range boundaries (URL-encode # as %23)
-- rangePrefix: Prefix for time-based ranges (URL-encode # as %23)
-- startTime/endTime: ISO timestamps for time range queries
-
-Operations:
-
-1. **getItem**: Get single item by exact PK/SK
-   GET /api/query?operation=getItem&partitionKey=User%231&sortKey=Profile
-   GET /api/query?operation=getItem&partitionKey=Order%23123&sortKey=Details
-
-2. **query**: Generic query with flexible range conditions
-   GET /api/query?operation=query&partitionKey=User%231&sortKeyPattern=Product%23
-   GET /api/query?operation=query&partitionKey=User%231&rangeStart=Product%232024-01-01&rangeEnd=Product%232024-12-31
-   GET /api/query?operation=query&partitionKey=Store%235&sortKeyPattern=Order%23&reverse=true&limit=20
-
-3. **queryRelated**: Query related entities for a parent
-   GET /api/query?operation=queryRelated&entityType=User&entityId=1&targetEntity=Product
-   GET /api/query?operation=queryRelated&entityType=Order&entityId=123&targetEntity=Item
-   GET /api/query?operation=queryRelated&entityType=Customer&entityId=456&targetEntity=Invoice&limit=5&reverse=true
-
-4. **queryTimeRange**: Query within time boundaries
-   GET /api/query?operation=queryTimeRange&partitionKey=User%231&startTime=2024-05-01T00:00:00Z&endTime=2024-05-31T23:59:59Z&rangePrefix=Product%23
-   GET /api/query?operation=queryTimeRange&partitionKey=Store%235&startTime=2024-05-28T00:00:00Z&endTime=2024-05-28T23:59:59Z&rangePrefix=Sale%23
-
-5. **queryAll**: Get all data for an entity (profile + all related)
-   GET /api/query?operation=queryAll&entityType=User&entityId=1
-   GET /api/query?operation=queryAll&entityType=Order&entityId=123&attributes=orderId,status,total
-
-6. **scan**: Table scan (use sparingly!)
-   GET /api/query?operation=scan&limit=100&attributes=PK,SK,name
-
-Multi-Entity Examples:
-
-User Management:
-- Profile: /api/query?operation=getItem&partitionKey=User%231&sortKey=Profile
-- Products: /api/query?operation=queryRelated&entityType=User&entityId=1&targetEntity=Product
-- Orders: /api/query?operation=queryRelated&entityType=User&entityId=1&targetEntity=Order
-- All User Data: /api/query?operation=queryAll&entityType=User&entityId=1
-
-E-commerce:
-- Order Details: /api/query?operation=getItem&partitionKey=Order%23123&sortKey=Details
-- Order Items: /api/query?operation=queryRelated&entityType=Order&entityId=123&targetEntity=Item
-- Customer Orders: /api/query?operation=queryRelated&entityType=Customer&entityId=456&targetEntity=Order
-- Recent Orders: /api/query?operation=query&partitionKey=Store%231&sortKeyPattern=Order%23&reverse=true&limit=10
-
-Inventory:
-- Product Info: /api/query?operation=getItem&partitionKey=Product%23ABC123&sortKey=Details
-- Product Reviews: /api/query?operation=queryRelated&entityType=Product&entityId=ABC123&targetEntity=Review
-- Category Products: /api/query?operation=query&partitionKey=Category%23Electronics&sortKeyPattern=Product%23
-
-Analytics:
-- Daily Sales: /api/query?operation=queryTimeRange&partitionKey=Store%231&startTime=2024-05-28T00:00:00Z&endTime=2024-05-28T23:59:59Z&rangePrefix=Sale%23
-- User Activity: /api/query?operation=queryTimeRange&partitionKey=User%231&startTime=2024-05-01T00:00:00Z&endTime=2024-05-31T23:59:59Z&rangePrefix=Activity%23
-
-Response Format:
-```json
-{
-  "operation": "operation_name",
-  "data": "result_data",
-  "count": "number_of_items",
-  "partitionKey": "used_partition_key",
-  "entityType": "entity_type",
-  "entityId": "entity_id",
-  "nextStartKey": "pagination_token",
-  "queryOptions": {
-    "limit": 10,
-    "reverse": false,
-    "attributes": ["attr1", "attr2"]
-  }
-}
-```
-
-Error Responses:
-- 400: Invalid operation or missing required parameters
-- 500: DynamoDB or server errors
-
-Benefits:
-- **Entity Agnostic**: Works with any entity type (User, Order, Product, etc.)
-- **Flexible Queries**: Supports various access patterns
-- **Extensible**: Easy to add new entity types without code changes
-- **Performance**: Leverages DynamoDB's query capabilities
-- **Consistent**: Same API for all entity operations
-- **Scalable**: Supports pagination for large datasets
-
-Frontend Usage Patterns:
-
-```javascript
-// Helper function to properly encode partition keys
-const encodeKey = (key) => encodeURIComponent(key);
-
-// Generic entity operations
-const getEntity = (type, id) => 
-  fetch(`/api/query?operation=getItem&partitionKey=${encodeKey(type + '#' + id)}&sortKey=Profile`);
-
-const getRelatedEntities = (type, id, targetType, options = {}) => {
-  const params = new URLSearchParams({
-    operation: 'queryRelated',
-    entityType: type,
-    entityId: id,
-    targetEntity: targetType,
-    ...options
   });
-  return fetch(`/api/query?${params}`);
 };
 
-const queryWithPattern = (partitionKey, sortKeyPattern, options = {}) => {
-  const params = new URLSearchParams({
-    operation: 'query',
-    partitionKey: encodeKey(partitionKey),
-    sortKeyPattern: encodeKey(sortKeyPattern),
-    ...options
-  });
-  return fetch(`/api/query?${params}`);
-};
-
-const getAllEntityData = (type, id) =>
-  fetch(`/api/query?operation=queryAll&entityType=${type}&entityId=${id}`);
-
-// Usage examples
-const userProfile = await getEntity('User', '1');
-const userProducts = await getRelatedEntities('User', '1', 'Product', { limit: 5, reverse: true });
-const orderItems = await getRelatedEntities('Order', '123', 'Item');
-const categoryProducts = await queryWithPattern('Category#Electronics', 'Product#');
-const allUserData = await getAllEntityData('User', '1');
-```
-
-URL Encoding Reference:
-- # becomes %23
-- User#1 becomes User%231
-- Product#2024-05-28 becomes Product%232024-05-28
-
-This generic design allows you to easily add new entity types (Customer, Invoice, Category, etc.) 
-without modifying the API code - just follow the PK/SK naming conventions and proper URL encoding!
-*/
-
-console.log(`🚀 Server running at ${server.url}`);
+// Start the server
+startServer();

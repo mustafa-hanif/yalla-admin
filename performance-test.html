@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Database Performance Monitor</title>
+    <style>
+        body {
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #0d1117;
+            color: #c9d1d9;
+        }
+        .container {
+            background: #161b22;
+            border-radius: 8px;
+            border: 1px solid #30363d;
+            padding: 24px;
+            margin-bottom: 20px;
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        input, select, button {
+            padding: 8px 12px;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            background: #0d1117;
+            color: #c9d1d9;
+            font-family: inherit;
+        }
+        button {
+            background: #238636;
+            border-color: #238636;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #2ea043;
+        }
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+        .metric-card {
+            background: #21262d;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 16px;
+        }
+        .metric-label {
+            color: #8b949e;
+            font-size: 12px;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+        .metric-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #58a6ff;
+        }
+        .metric-details {
+            font-size: 11px;
+            color: #8b949e;
+            margin-top: 4px;
+        }
+        .results {
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 16px;
+            overflow-x: auto;
+        }
+        .json-view {
+            white-space: pre-wrap;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+        .performance-chart {
+            margin-top: 20px;
+            height: 200px;
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 16px;
+            display: flex;
+            align-items: end;
+            gap: 4px;
+        }
+        .bar {
+            background: linear-gradient(to top, #238636, #2ea043);
+            min-height: 2px;
+            flex: 1;
+            border-radius: 2px;
+            position: relative;
+        }
+        .bar:hover::after {
+            content: attr(data-value);
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #21262d;
+            border: 1px solid #30363d;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            white-space: nowrap;
+        }
+        .status {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            margin-left: 10px;
+        }
+        .status.success { background: #238636; color: white; }
+        .status.error { background: #da3633; color: white; }
+        .status.loading { background: #f85149; color: white; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 Database Performance Monitor</h1>
+        <p>Real-time performance monitoring for your SQL database API</p>
+        
+        <div class="controls">
+            <select id="operation">
+                <option value="getItem">Get Item</option>
+                <option value="query">Query</option>
+                <option value="queryRelated">Query Related</option>
+                <option value="queryTimeRange">Query Time Range</option>
+                <option value="queryAll">Query All</option>
+                <option value="scan">Scan</option>
+            </select>
+            
+            <input type="text" id="partitionKey" placeholder="Partition Key (e.g., User#1)" value="User#1">
+            <input type="text" id="sortKey" placeholder="Sort Key (optional)" value="Profile">
+            <input type="number" id="limit" placeholder="Limit" value="10" min="1" max="100">
+            
+            <button onclick="runTest()">Run Test</button>
+            <button onclick="runBenchmark()">Run Benchmark (10x)</button>
+            <button onclick="clearResults()">Clear</button>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>📊 Performance Metrics</h2>
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <div class="metric-label">Total Request Time</div>
+                <div class="metric-value" id="totalTime">-</div>
+                <div class="metric-details">End-to-end request</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Network Time</div>
+                <div class="metric-value" id="networkTime">-</div>
+                <div class="metric-details">Transfer + latency</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Database Time</div>
+                <div class="metric-value" id="dbTime">-</div>
+                <div class="metric-details">SQL query execution</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Processing Time</div>
+                <div class="metric-value" id="processingTime">-</div>
+                <div class="metric-details">Data transformation</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Response Size</div>
+                <div class="metric-value" id="responseSize">-</div>
+                <div class="metric-details">Bytes transferred</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Records Returned</div>
+                <div class="metric-value" id="recordCount">-</div>
+                <div class="metric-details">Data points</div>
+            </div>
+        </div>
+        
+        <div class="performance-chart" id="performanceChart">
+            <!-- Bars will be added dynamically -->
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>📋 Latest Result</h2>
+        <div id="status"></div>
+        <div class="results">
+            <pre class="json-view" id="results">Click "Run Test" to see results...</pre>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:3000';
+        let benchmarkResults = [];
+
+        async function runTest() {
+            const operation = document.getElementById('operation').value;
+            const partitionKey = document.getElementById('partitionKey').value;
+            const sortKey = document.getElementById('sortKey').value;
+            const limit = document.getElementById('limit').value;
+
+            const statusEl = document.getElementById('status');
+            statusEl.innerHTML = '<span class="status loading">Running...</span>';
+
+            try {
+                // Build query parameters
+                const params = new URLSearchParams({
+                    operation,
+                    ...(partitionKey && { partitionKey }),
+                    ...(sortKey && { sortKey }),
+                    ...(limit && { limit })
+                });
+
+                // Measure network time
+                const networkStart = performance.now();
+                const response = await fetch(`${API_BASE}/api/query?${params}`);
+                const networkEnd = performance.now();
+                
+                const data = await response.json();
+                const responseText = JSON.stringify(data, null, 2);
+                
+                // Calculate network time (total - server processing)
+                const totalClientTime = networkEnd - networkStart;
+                const serverTime = data.performance?.breakdown?.totalMs || 0;
+                const networkTime = Math.max(0, totalClientTime - serverTime);
+
+                // Update metrics
+                updateMetrics({
+                    totalTime: totalClientTime,
+                    networkTime: networkTime,
+                    dbTime: data.performance?.breakdown?.databaseMs || 0,
+                    processingTime: data.performance?.breakdown?.processingMs || 0,
+                    responseSize: new Blob([responseText]).size,
+                    recordCount: data.count || data.data?.length || 0
+                });
+
+                // Update chart
+                addToBenchmark({
+                    timestamp: new Date(),
+                    totalTime: totalClientTime,
+                    networkTime: networkTime,
+                    dbTime: data.performance?.breakdown?.databaseMs || 0,
+                    processingTime: data.performance?.breakdown?.processingMs || 0
+                });
+
+                // Show results
+                document.getElementById('results').textContent = responseText;
+                statusEl.innerHTML = '<span class="status success">Success</span>';
+
+            } catch (error) {
+                document.getElementById('results').textContent = `Error: ${error.message}`;
+                statusEl.innerHTML = '<span class="status error">Error</span>';
+                console.error('Test failed:', error);
+            }
+        }
+
+        async function runBenchmark() {
+            const iterations = 10;
+            const results = [];
+            
+            for (let i = 0; i < iterations; i++) {
+                document.getElementById('status').innerHTML = `<span class="status loading">Benchmark ${i + 1}/${iterations}</span>`;
+                
+                try {
+                    await new Promise(resolve => setTimeout(resolve, 100)); // Small delay between requests
+                    await runTest();
+                    
+                    // Collect timing data
+                    const totalTime = parseFloat(document.getElementById('totalTime').textContent);
+                    const networkTime = parseFloat(document.getElementById('networkTime').textContent);
+                    const dbTime = parseFloat(document.getElementById('dbTime').textContent);
+                    
+                    results.push({ totalTime, networkTime, dbTime });
+                } catch (error) {
+                    console.error(`Benchmark iteration ${i + 1} failed:`, error);
+                }
+            }
+
+            // Calculate averages
+            const avg = (arr) => arr.reduce((a, b) => a + b, 0) / arr.length;
+            const avgTotal = avg(results.map(r => r.totalTime));
+            const avgNetwork = avg(results.map(r => r.networkTime));
+            const avgDb = avg(results.map(r => r.dbTime));
+
+            document.getElementById('results').textContent = 
+                `Benchmark Results (${iterations} iterations):\n\n` +
+                `Average Total Time: ${avgTotal.toFixed(2)}ms\n` +
+                `Average Network Time: ${avgNetwork.toFixed(2)}ms\n` +
+                `Average Database Time: ${avgDb.toFixed(2)}ms\n\n` +
+                `Individual Results:\n` +
+                results.map((r, i) => `${i + 1}: Total=${r.totalTime.toFixed(2)}ms, Network=${r.networkTime.toFixed(2)}ms, DB=${r.dbTime.toFixed(2)}ms`).join('\n');
+
+            document.getElementById('status').innerHTML = '<span class="status success">Benchmark Complete</span>';
+        }
+
+        function updateMetrics(metrics) {
+            document.getElementById('totalTime').textContent = `${metrics.totalTime.toFixed(2)}ms`;
+            document.getElementById('networkTime').textContent = `${metrics.networkTime.toFixed(2)}ms`;
+            document.getElementById('dbTime').textContent = `${metrics.dbTime.toFixed(2)}ms`;
+            document.getElementById('processingTime').textContent = `${metrics.processingTime.toFixed(2)}ms`;
+            document.getElementById('responseSize').textContent = `${(metrics.responseSize / 1024).toFixed(1)}KB`;
+            document.getElementById('recordCount').textContent = metrics.recordCount.toString();
+        }
+
+        function addToBenchmark(result) {
+            benchmarkResults.push(result);
+            if (benchmarkResults.length > 50) {
+                benchmarkResults.shift(); // Keep only last 50 results
+            }
+            updateChart();
+        }
+
+        function updateChart() {
+            const chart = document.getElementById('performanceChart');
+            chart.innerHTML = '';
+            
+            if (benchmarkResults.length === 0) return;
+
+            const maxTime = Math.max(...benchmarkResults.map(r => r.totalTime));
+            
+            benchmarkResults.forEach((result, index) => {
+                const bar = document.createElement('div');
+                bar.className = 'bar';
+                bar.style.height = `${(result.totalTime / maxTime) * 150}px`;
+                bar.setAttribute('data-value', `${result.totalTime.toFixed(1)}ms`);
+                chart.appendChild(bar);
+            });
+        }
+
+        function clearResults() {
+            document.getElementById('results').textContent = 'Click "Run Test" to see results...';
+            document.getElementById('status').innerHTML = '';
+            benchmarkResults = [];
+            updateChart();
+            
+            // Reset metrics
+            ['totalTime', 'networkTime', 'dbTime', 'processingTime', 'responseSize', 'recordCount'].forEach(id => {
+                document.getElementById(id).textContent = '-';
+            });
+        }
+
+        // Auto-run initial test
+        document.addEventListener('DOMContentLoaded', () => {
+            // Add some sample data first
+            setTimeout(() => {
+                fetch(`${API_BASE}/api/seed`, { method: 'POST' })
+                    .then(() => runTest())
+                    .catch(console.error);
+            }, 1000);
+        });
+    </script>
+</body>
+</html>

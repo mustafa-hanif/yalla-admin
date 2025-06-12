@@ -117,7 +117,7 @@ export function ProductsPage() {
               <div className="text-2xl font-bold text-purple-700">
                 $
                 {products
-                  .reduce((sum, p) => sum + (p.price || 0), 0)
+                  .reduce((sum, p) => sum + (Number(p.price) || 0), 0)
                   .toFixed(2)}
               </div>
               <div className="text-sm text-purple-600">Total Value</div>
