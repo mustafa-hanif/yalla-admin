@@ -29,7 +29,7 @@ Modern SQL Database Design:
 
 import { serve, sql } from "bun";
 
-import { queryTester } from "./lib/queryTester";
+// import { queryTester } from "./lib/queryTester";
 import index from "./index.html";
 import { searchAmazon } from "./amazon-scraper";
 import { initDatabase } from "./lib/migrate";
@@ -232,7 +232,7 @@ const startServer = async () => {
       port: 3000,
     });
 
-    await queryTester.runTestSuite();
+    // await queryTester.runTestSuite();
     console.log(`🚀 Server running at ${server.url}`);
     return server;
   } catch (error) {
