@@ -9,33 +9,55 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { DataTable } from "@/components/DataTable";
-import { useDirectQuery, useUserProducts } from "@/lib/queries";
+import { useProducts, useUserProducts } from "@/lib/queries";
 import { columns } from "@/components/ProductColumns";
 import type { Product } from "@/components/ProductColumns";
 
+/**
+ * ProductsPage - Updated to use SQL-based queries
+ *
+ * Changes made:
+ * - Replaced useDirectQuery with useProducts hook
+ * - Updated data transformation to match existing Product interface
+ * - Now fetches all products with filtering options
+ * - Maintains compatibility with existing DataTable and ProductColumns
+ */
+
 export function ProductsPage() {
-  // Using sample user for demo - in real app this would come from auth context
+  // Get all products using the new SQL-based hook
   const {
     data: apiProducts,
     isLoading,
     error,
-  } = useDirectQuery("User#1", "Product#");
+  } = useProducts({
+    status: "active",
+    limit: 100,
+    orderBy: "created_at",
+    orderDirection: "DESC",
+  });
 
-  // For demo purposes, use mock data if API data is empty or has errors
+  // Transform API data to match the Product interface expected by the table
   const products: Product[] =
     apiProducts?.data && apiProducts.data.length > 0
       ? apiProducts.data.map(
           (p) =>
             ({
-              ...p,
-              status: (p as any).status || "active",
-              stock: (p as any).stock || 0,
-              category: (p as any).category,
+              PK: `Product#${p.id}`,
+              SK: "Profile",
+              productId: p.id,
+              name: p.name,
+              price: p.price || 0,
+              description: p.description || "",
+              createdAt: p.created_at || new Date().toISOString(),
+              updatedAt: p.updated_at,
+              status: (p.status as "active" | "inactive" | "draft") || "active",
+              stock: 0, // Default stock value since it's not in our SQL schema
+              category: p.category || "Uncategorized",
             }) as Product
         )
-      : null;
+      : [];
 
-  if (error && !products?.length) {
+  if (error && products.length === 0) {
     return (
       <div className="flex items-center justify-center h-96">
         <Card className="w-96">
@@ -54,7 +76,7 @@ export function ProductsPage() {
     );
   }
 
-  if (isLoading && !products?.length) {
+  if (isLoading && products.length === 0) {
     return (
       <div className="flex items-center justify-center h-96 w-6xl">
         <Card className="w-96">
@@ -142,11 +164,7 @@ export function ProductsPage() {
           </div>
         </CardHeader>
         <CardContent className="p-6">
-          <DataTable
-            columns={columns}
-            data={products || []}
-            loading={isLoading}
-          />
+          <DataTable columns={columns} data={products} loading={isLoading} />
         </CardContent>
       </Card>
     </div>

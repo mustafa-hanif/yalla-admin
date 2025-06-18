@@ -1,12 +1,14 @@
 import React, { useState } from "react";
 import {
-  useUserProfile,
+  useUser,
+  useUsers,
   useUserProducts,
-  useUserProductsInfinite,
-  useLatestUserProducts,
-  useUserAllData,
+  useProducts,
   useUserDashboard,
-  useInvalidateUser,
+  useCreateUser,
+  useUpdateUser,
+  useDeleteUser,
+  useInvalidateQueries,
   queryClient,
 } from "../lib/queries";
 import { Button } from "./ui/button";
@@ -28,16 +30,22 @@ export function UserProductDemo({
 }: UserProductDemoProps) {
   const [userId, setUserId] = useState(defaultUserId);
   const [inputUserId, setInputUserId] = useState(defaultUserId);
-  const { invalidateUser, invalidateUserProfile, invalidateUserProducts } =
-    useInvalidateUser();
+  const { invalidateUser, invalidateUsers, invalidateProducts } =
+    useInvalidateQueries();
 
   // Different query hooks for demonstration
-  const profileQuery = useUserProfile(userId);
+  const userQuery = useUser(userId);
   const productsQuery = useUserProducts(userId, { limit: 5 });
-  const latestProductsQuery = useLatestUserProducts(userId, 3);
-  const allDataQuery = useUserAllData(userId);
-  const infiniteProductsQuery = useUserProductsInfinite(userId, { limit: 2 });
+  const allUsersQuery = useUsers({ limit: 10 });
+  const allProductsQuery = useProducts({ limit: 10 });
   const dashboardQuery = useUserDashboard(userId, 3);
+
+  // Mutation hooks for demonstration
+  const createUser = useCreateUser({
+    onSuccess: () => {
+      console.log("User created successfully");
+    },
+  });
 
   const handleUserChange = () => {
     setUserId(inputUserId);
@@ -47,10 +55,18 @@ export function UserProductDemo({
     invalidateUser(userId);
   };
 
+  const handleCreateUser = () => {
+    createUser.mutate({
+      name: `Test User ${Date.now()}`,
+      email: `test${Date.now()}@example.com`,
+      status: "active",
+    });
+  };
+
   return (
     <div className="p-6 space-y-6 w-6xl mx-auto">
       <div className="flex items-center gap-4 mb-6">
-        <h1 className="text-2xl font-bold">TanStack Query Demo</h1>
+        <h1 className="text-2xl font-bold">SQL Query Demo</h1>
         <div className="flex gap-2">
           <Input
             placeholder="User ID"
@@ -62,39 +78,45 @@ export function UserProductDemo({
           <Button onClick={handleInvalidate} variant="outline">
             Invalidate Cache
           </Button>
+          <Button onClick={handleCreateUser} variant="secondary">
+            Create Test User
+          </Button>
         </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* User Profile */}
+        {/* Single User */}
         <Card>
           <CardHeader>
-            <CardTitle>User Profile</CardTitle>
-            <CardDescription>useUserProfile hook</CardDescription>
+            <CardTitle>Single User</CardTitle>
+            <CardDescription>useUser hook</CardDescription>
           </CardHeader>
           <CardContent>
-            {profileQuery.isLoading && <p>Loading profile...</p>}
-            {profileQuery.isError && (
-              <p className="text-red-500">
-                Error: {profileQuery.error?.message}
-              </p>
+            {userQuery.isLoading && <p>Loading user...</p>}
+            {userQuery.isError && (
+              <p className="text-red-500">Error: {userQuery.error?.message}</p>
             )}
-            {profileQuery.data && (
+            {userQuery.data?.data && (
               <div>
                 <p>
-                  <strong>Name:</strong>{" "}
-                  {profileQuery.data.data?.name || "No name"}
+                  <strong>ID:</strong> {userQuery.data.data.id}
                 </p>
                 <p>
-                  <strong>PK:</strong> {profileQuery.data.data?.PK}
+                  <strong>Name:</strong> {userQuery.data.data.name}
                 </p>
                 <p>
-                  <strong>SK:</strong> {profileQuery.data.data?.SK}
+                  <strong>Email:</strong> {userQuery.data.data.email}
                 </p>
                 <p>
-                  <strong>Found:</strong> {String(profileQuery.data.found)}
+                  <strong>Status:</strong> {userQuery.data.data.status}
+                </p>
+                <p>
+                  <strong>Created:</strong> {userQuery.data.data.created_at}
                 </p>
               </div>
+            )}
+            {userQuery.data && !userQuery.data.data && (
+              <p className="text-yellow-600">User not found</p>
             )}
           </CardContent>
         </Card>
@@ -102,7 +124,7 @@ export function UserProductDemo({
         {/* User Products */}
         <Card>
           <CardHeader>
-            <CardTitle>User Products (Paginated)</CardTitle>
+            <CardTitle>User Products</CardTitle>
             <CardDescription>useUserProducts hook (limit: 5)</CardDescription>
           </CardHeader>
           <CardContent>
@@ -115,18 +137,24 @@ export function UserProductDemo({
             {productsQuery.data && (
               <div>
                 <p>
-                  <strong>Count:</strong> {productsQuery.data.count}
+                  <strong>Count:</strong> {productsQuery.data.data?.length || 0}
                 </p>
                 <div className="space-y-2">
                   {productsQuery.data.data
                     ?.slice(0, 3)
-                    .map((product: any, index: number) => (
-                      <div key={index} className="p-2 bg-gray-50 rounded">
+                    .map((product, index) => (
+                      <div
+                        key={product.id || index}
+                        className="p-2 bg-gray-50 rounded"
+                      >
                         <p>
-                          <strong>{product.name || product.productId}</strong>
+                          <strong>{product.name}</strong>
                         </p>
                         <p className="text-sm text-gray-600">
-                          {product.PK} | {product.SK}
+                          ID: {product.id} | Price: ${product.price}
+                        </p>
+                        <p className="text-sm text-gray-600">
+                          Status: {product.status}
                         </p>
                       </div>
                     ))}
@@ -136,39 +164,39 @@ export function UserProductDemo({
           </CardContent>
         </Card>
 
-        {/* Latest Products */}
+        {/* All Users */}
         <Card>
           <CardHeader>
-            <CardTitle>Latest Products</CardTitle>
-            <CardDescription>
-              useLatestUserProducts hook (limit: 3, reverse: true)
-            </CardDescription>
+            <CardTitle>All Users</CardTitle>
+            <CardDescription>useUsers hook (limit: 10)</CardDescription>
           </CardHeader>
           <CardContent>
-            {latestProductsQuery.isLoading && <p>Loading latest products...</p>}
-            {latestProductsQuery.isError && (
+            {allUsersQuery.isLoading && <p>Loading users...</p>}
+            {allUsersQuery.isError && (
               <p className="text-red-500">
-                Error: {latestProductsQuery.error?.message}
+                Error: {allUsersQuery.error?.message}
               </p>
             )}
-            {latestProductsQuery.data && (
+            {allUsersQuery.data && (
               <div>
                 <p>
-                  <strong>Count:</strong> {latestProductsQuery.data.count}
+                  <strong>Count:</strong> {allUsersQuery.data.data?.length || 0}
                 </p>
                 <div className="space-y-2">
-                  {latestProductsQuery.data.data
-                    ?.slice(0, 3)
-                    .map((product: any, index: number) => (
-                      <div key={index} className="p-2 bg-blue-50 rounded">
-                        <p>
-                          <strong>{product.name || product.productId}</strong>
-                        </p>
-                        <p className="text-sm text-gray-600">
-                          {product.createdAt || "No date"}
-                        </p>
-                      </div>
-                    ))}
+                  {allUsersQuery.data.data?.slice(0, 3).map((user, index) => (
+                    <div
+                      key={user.id || index}
+                      className="p-2 bg-blue-50 rounded"
+                    >
+                      <p>
+                        <strong>{user.name}</strong>
+                      </p>
+                      <p className="text-sm text-gray-600">{user.email}</p>
+                      <p className="text-sm text-gray-600">
+                        Status: {user.status}
+                      </p>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
@@ -180,7 +208,7 @@ export function UserProductDemo({
           <CardHeader>
             <CardTitle>User Dashboard</CardTitle>
             <CardDescription>
-              useUserDashboard hook (profile + latest products)
+              useUserDashboard hook (user + products)
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -193,14 +221,21 @@ export function UserProductDemo({
             {!dashboardQuery.isLoading && !dashboardQuery.isError && (
               <div>
                 <div className="mb-4">
-                  <h4 className="font-semibold">Profile Status:</h4>
+                  <h4 className="font-semibold">User Status:</h4>
                   <p>
-                    {dashboardQuery.profile.data?.found ? "Found" : "Not found"}
+                    {dashboardQuery.user.data?.data ? "Found" : "Not found"}
                   </p>
+                  {dashboardQuery.user.data?.data && (
+                    <p className="text-sm text-gray-600">
+                      {dashboardQuery.user.data.data.name}
+                    </p>
+                  )}
                 </div>
                 <div>
-                  <h4 className="font-semibold">Products Status:</h4>
-                  <p>{dashboardQuery.products.data?.count || 0} products</p>
+                  <h4 className="font-semibold">Products:</h4>
+                  <p>
+                    {dashboardQuery.products.data?.data?.length || 0} products
+                  </p>
                 </div>
               </div>
             )}
@@ -208,121 +243,82 @@ export function UserProductDemo({
         </Card>
       </div>
 
-      {/* Infinite Query Demo */}
+      {/* All Products */}
       <Card className="col-span-full">
         <CardHeader>
-          <CardTitle>Infinite Products</CardTitle>
-          <CardDescription>
-            useUserProductsInfinite hook with pagination
-          </CardDescription>
+          <CardTitle>All Products</CardTitle>
+          <CardDescription>useProducts hook with pagination</CardDescription>
         </CardHeader>
         <CardContent>
-          {infiniteProductsQuery.isLoading && (
-            <p>Loading infinite products...</p>
-          )}
-          {infiniteProductsQuery.isError && (
+          {allProductsQuery.isLoading && <p>Loading all products...</p>}
+          {allProductsQuery.isError && (
             <p className="text-red-500">
-              Error: {infiniteProductsQuery.error?.message}
+              Error: {allProductsQuery.error?.message}
             </p>
           )}
-          {infiniteProductsQuery.data && (
+          {allProductsQuery.data && (
             <div>
-              <div className="space-y-4">
-                {infiniteProductsQuery.data.pages.map((page, pageIndex) => (
-                  <div
-                    key={pageIndex}
-                    className="border-l-4 border-green-400 pl-4"
-                  >
-                    <h4 className="font-semibold">
-                      Page {pageIndex + 1} ({page.count} items)
-                    </h4>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2">
-                      {page.data
-                        ?.slice(0, 4)
-                        .map((product: any, index: number) => (
-                          <div
-                            key={index}
-                            className="p-2 bg-green-50 rounded text-sm"
-                          >
-                            <p>
-                              <strong>
-                                {product.name || product.productId}
-                              </strong>
-                            </p>
-                            <p className="text-gray-600">
-                              {product.PK} | {product.SK}
-                            </p>
-                          </div>
-                        ))}
+              <p className="mb-4">
+                <strong>Total Products:</strong>{" "}
+                {allProductsQuery.data.data?.length || 0}
+              </p>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {allProductsQuery.data.data
+                  ?.slice(0, 6)
+                  .map((product, index) => (
+                    <div
+                      key={product.id || index}
+                      className="p-3 bg-green-50 rounded border"
+                    >
+                      <p className="font-semibold">{product.name}</p>
+                      <p className="text-sm text-gray-600">
+                        Price: ${product.price}
+                      </p>
+                      <p className="text-sm text-gray-600">
+                        Category: {product.category}
+                      </p>
+                      <p className="text-sm text-gray-600">
+                        Status: {product.status}
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        User: {product.user_id}
+                      </p>
                     </div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="mt-4 flex gap-2">
-                <Button
-                  onClick={() => infiniteProductsQuery.fetchNextPage()}
-                  disabled={
-                    !infiniteProductsQuery.hasNextPage ||
-                    infiniteProductsQuery.isFetchingNextPage
-                  }
-                >
-                  {infiniteProductsQuery.isFetchingNextPage
-                    ? "Loading more..."
-                    : infiniteProductsQuery.hasNextPage
-                      ? "Load More"
-                      : "No more data"}
-                </Button>
-
-                {infiniteProductsQuery.isFetching &&
-                  !infiniteProductsQuery.isFetchingNextPage && (
-                    <span className="text-sm text-gray-500">
-                      Background updating...
-                    </span>
-                  )}
+                  ))}
               </div>
             </div>
           )}
         </CardContent>
       </Card>
 
-      {/* All Data Query */}
+      {/* Mutation Status */}
       <Card className="col-span-full">
         <CardHeader>
-          <CardTitle>All User Data</CardTitle>
-          <CardDescription>
-            useUserAllData hook (profile + all related entities)
-          </CardDescription>
+          <CardTitle>Mutation Status</CardTitle>
+          <CardDescription>Create user mutation status</CardDescription>
         </CardHeader>
         <CardContent>
-          {allDataQuery.isLoading && <p>Loading all data...</p>}
-          {allDataQuery.isError && (
-            <p className="text-red-500">Error: {allDataQuery.error?.message}</p>
-          )}
-          {allDataQuery.data && (
-            <div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div>
-                  <h4 className="font-semibold">Profile</h4>
-                  <pre className="text-xs bg-gray-100 p-2 rounded overflow-auto">
-                    {JSON.stringify(allDataQuery.data.data?.profile, null, 2)}
-                  </pre>
-                </div>
-                <div>
-                  <h4 className="font-semibold">Related Entities</h4>
-                  <pre className="text-xs bg-gray-100 p-2 rounded overflow-auto">
-                    {JSON.stringify(allDataQuery.data.data?.related, null, 2)}
-                  </pre>
-                </div>
-                <div>
-                  <h4 className="font-semibold">Raw Data Count</h4>
-                  <p>{allDataQuery.data.data?.raw?.length || 0} total items</p>
-                  <p>Operation: {allDataQuery.data.operation}</p>
-                  <p>Count: {allDataQuery.data.count}</p>
-                </div>
-              </div>
-            </div>
-          )}
+          <div className="space-y-2">
+            <p>
+              <strong>Create User Status:</strong>{" "}
+              {createUser.isPending
+                ? "Creating..."
+                : createUser.isSuccess
+                  ? "Success!"
+                  : createUser.isError
+                    ? "Error"
+                    : "Ready"}
+            </p>
+            {createUser.isError && (
+              <p className="text-red-500">Error: {createUser.error?.message}</p>
+            )}
+            {createUser.isSuccess && createUser.data && (
+              <p className="text-green-600">
+                User created successfully! Operation:{" "}
+                {createUser.data.operation}
+              </p>
+            )}
+          </div>
         </CardContent>
       </Card>
 
@@ -335,16 +331,16 @@ export function UserProductDemo({
         <CardContent>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
             <div>
-              <strong>Profile:</strong>
+              <strong>Single User:</strong>
               <br />
-              Loading: {String(profileQuery.isLoading)}
+              Loading: {String(userQuery.isLoading)}
               <br />
-              Error: {String(profileQuery.isError)}
+              Error: {String(userQuery.isError)}
               <br />
-              Success: {String(profileQuery.isSuccess)}
+              Success: {String(userQuery.isSuccess)}
             </div>
             <div>
-              <strong>Products:</strong>
+              <strong>User Products:</strong>
               <br />
               Loading: {String(productsQuery.isLoading)}
               <br />
@@ -353,22 +349,22 @@ export function UserProductDemo({
               Success: {String(productsQuery.isSuccess)}
             </div>
             <div>
-              <strong>Latest:</strong>
+              <strong>All Users:</strong>
               <br />
-              Loading: {String(latestProductsQuery.isLoading)}
+              Loading: {String(allUsersQuery.isLoading)}
               <br />
-              Error: {String(latestProductsQuery.isError)}
+              Error: {String(allUsersQuery.isError)}
               <br />
-              Success: {String(latestProductsQuery.isSuccess)}
+              Success: {String(allUsersQuery.isSuccess)}
             </div>
             <div>
-              <strong>All Data:</strong>
+              <strong>All Products:</strong>
               <br />
-              Loading: {String(allDataQuery.isLoading)}
+              Loading: {String(allProductsQuery.isLoading)}
               <br />
-              Error: {String(allDataQuery.isError)}
+              Error: {String(allProductsQuery.isError)}
               <br />
-              Success: {String(allDataQuery.isSuccess)}
+              Success: {String(allProductsQuery.isSuccess)}
             </div>
           </div>
         </CardContent>

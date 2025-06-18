@@ -9,79 +9,75 @@ import {
 import type {
   UseQueryOptions,
   UseInfiniteQueryOptions,
+  UseMutationOptions,
 } from "@tanstack/react-query";
 
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      gcTime: 0,
-      staleTime: 0,
+      gcTime: 5 * 60 * 1000, // 5 minutes
+      staleTime: 2 * 60 * 1000, // 2 minutes
     },
   },
 });
 
-// Types for our API responses
-interface ApiResponse<T = any> {
-  operation: string;
+// Types for our SQL query responses
+interface SqlQueryResponse<T = any> {
+  success: boolean;
   data: T;
-  count?: number;
-  scannedCount?: number;
-  partitionKey?: string;
-  entityType?: string;
-  entityId?: string;
-  nextStartKey?: string;
-  found?: boolean;
-  queryOptions?: {
-    limit: number;
-    reverse: boolean;
-    attributes?: string[];
-  };
   error?: string;
-  details?: string;
+  operation: string | null;
+  table: string | null;
 }
 
-interface UserProfile {
-  PK: string;
-  SK: string;
+// Database entity interfaces
+interface User {
+  id: string;
   name: string;
+  email: string;
+  status?: string;
+  created_at?: string;
+  updated_at?: string;
 }
 
 interface Product {
-  PK: string;
-  SK: string;
-  productId: string;
+  id: string;
   name: string;
   price?: number;
   description?: string;
-  createdAt: string;
-  updatedAt?: string;
+  category?: string;
+  user_id?: string;
+  status?: string;
+  created_at?: string;
+  updated_at?: string;
 }
 
-interface UserData {
-  profile: UserProfile | null;
-  related: {
-    Product?: Product[];
-    [key: string]: any[];
-  };
-  raw: any[];
+interface Category {
+  id: string;
+  name: string;
+  description?: string;
+  created_at?: string;
 }
 
-// Helper function to properly encode partition keys
-const encodeKey = (key: string) => encodeURIComponent(key);
-
-// Base API function
-async function apiQuery<T = any>(
+// Helper function to create query URLs
+const createQueryUrl = (
   params: Record<string, string | number | boolean>
-): Promise<ApiResponse<T>> {
-  const searchParams = new URLSearchParams();
-
+): URL => {
+  const url = new URL("http://localhost:3000/api/query"); // Base URL doesn't matter for generalQuery
   Object.entries(params).forEach(([key, value]) => {
     if (value !== undefined && value !== null) {
-      searchParams.append(key, String(value));
+      url.searchParams.set(key, String(value));
     }
   });
+  return url;
+};
 
-  const response = await fetch(`/api/query?${searchParams}`);
+// Base query function using generalQuery
+async function executeQuery<T = any>(
+  params: Record<string, string | number | boolean>
+): Promise<SqlQueryResponse<T>> {
+  const url = createQueryUrl(params);
+  const response = await fetch(url);
 
   if (!response.ok) {
     const errorData = await response.json();
@@ -94,30 +90,26 @@ async function apiQuery<T = any>(
 // Query Keys Factory
 export const queryKeys = {
   // User queries
-  user: (userId: string) => ["user", userId] as const,
-  userProfile: (userId: string) => ["user", userId, "profile"] as const,
-  userProducts: (
-    userId: string,
-    options?: { limit?: number; reverse?: boolean }
-  ) => ["user", userId, "products", options] as const,
-  userAllData: (userId: string) => ["user", userId, "all"] as const,
+  users: () => ["users"] as const,
+  user: (userId: string) => ["users", userId] as const,
+  usersByStatus: (status: string) => ["users", "status", status] as const,
 
-  // Generic entity queries
-  entity: (entityType: string, entityId: string) =>
-    ["entity", entityType, entityId] as const,
-  entityProfile: (entityType: string, entityId: string) =>
-    ["entity", entityType, entityId, "profile"] as const,
-  entityRelated: (
-    entityType: string,
-    entityId: string,
-    targetEntity: string,
-    options?: any
-  ) =>
-    ["entity", entityType, entityId, "related", targetEntity, options] as const,
+  // Product queries
+  products: () => ["products"] as const,
+  product: (productId: string) => ["products", productId] as const,
+  productsByUser: (userId: string) => ["products", "user", userId] as const,
+  productsByCategory: (categoryId: string) =>
+    ["products", "category", categoryId] as const,
+  productsByStatus: (status: string) => ["products", "status", status] as const,
 
-  // Direct queries
-  directQuery: (partitionKey: string, options?: any) =>
-    ["direct", partitionKey, options] as const,
+  // Category queries
+  categories: () => ["categories"] as const,
+  category: (categoryId: string) => ["categories", categoryId] as const,
+
+  // Generic table queries
+  table: (tableName: string) => ["table", tableName] as const,
+  tableWithFilter: (tableName: string, filters: Record<string, any>) =>
+    ["table", tableName, "filtered", filters] as const,
 };
 
 // =============================================================================
@@ -125,299 +117,525 @@ export const queryKeys = {
 // =============================================================================
 
 /**
- * Get user profile by user ID
+ * Get all users with optional filtering
  */
-export function useUserProfile(
+export function useUsers(
+  filters?: {
+    status?: string;
+    limit?: number;
+    offset?: number;
+    orderBy?: string;
+    orderDirection?: "ASC" | "DESC";
+  },
+  options?: Omit<
+    UseQueryOptions<SqlQueryResponse<User[]>, Error>,
+    "queryKey" | "queryFn"
+  >
+) {
+  const queryParams: Record<string, string | number> = {
+    table: "users",
+    operation: "select",
+  };
+
+  if (filters?.status) queryParams.where_status = filters.status;
+  if (filters?.limit) queryParams.limit = filters.limit;
+  if (filters?.offset) queryParams.offset = filters.offset;
+  if (filters?.orderBy) queryParams.orderBy = filters.orderBy;
+  if (filters?.orderDirection)
+    queryParams.orderDirection = filters.orderDirection;
+
+  return useQuery({
+    queryKey: filters?.status
+      ? queryKeys.usersByStatus(filters.status)
+      : queryKeys.users(),
+    queryFn: () => executeQuery<User[]>(queryParams),
+    ...options,
+  });
+}
+
+/**
+ * Get a single user by ID
+ */
+export function useUser(
   userId: string,
   options?: Omit<
-    UseQueryOptions<ApiResponse<UserProfile>, Error>,
+    UseQueryOptions<SqlQueryResponse<User | null>, Error>,
     "queryKey" | "queryFn"
   >
 ) {
   return useQuery({
-    queryKey: queryKeys.userProfile(userId),
-    queryFn: () =>
-      apiQuery<UserProfile>({
-        operation: "getItem",
-        partitionKey: `User#${userId}`,
-        sortKey: "Profile",
-      }),
+    queryKey: queryKeys.user(userId),
+    queryFn: async () => {
+      const result = await executeQuery<User[]>({
+        table: "users",
+        operation: "select",
+        where_id: userId,
+      });
+
+      return {
+        ...result,
+        data: result.data?.[0] || null, // Get first user from array
+      };
+    },
     enabled: !!userId,
     ...options,
   });
 }
 
 /**
- * Get user products with pagination support
+ * Get products for a specific user
  */
 export function useUserProducts(
   userId: string,
-  queryOptions?: {
+  filters?: {
+    status?: string;
+    category?: string;
     limit?: number;
-    reverse?: boolean;
-    attributes?: string[];
+    offset?: number;
+    orderBy?: string;
+    orderDirection?: "ASC" | "DESC";
   },
   options?: Omit<
-    UseQueryOptions<ApiResponse<Product[]>, Error>,
+    UseQueryOptions<SqlQueryResponse<Product[]>, Error>,
     "queryKey" | "queryFn"
   >
 ) {
-  return useQuery({
-    queryKey: queryKeys.userProducts(userId, queryOptions),
-    queryFn: () =>
-      apiQuery<Product[]>({
-        operation: "queryRelated",
-        entityType: "User",
-        entityId: userId,
-        targetEntity: "Product",
-        ...(queryOptions?.limit && { limit: queryOptions.limit }),
-        ...(queryOptions?.reverse !== undefined && {
-          reverse: queryOptions.reverse,
-        }),
-        ...(queryOptions?.attributes && {
-          attributes: queryOptions.attributes.join(","),
-        }),
-      }),
-    enabled: !!userId,
+  const queryParams: Record<string, string | number> = {
+    table: "products",
+    operation: "select",
+    where_user_id: userId,
+  };
 
+  if (filters?.status) queryParams.where_status = filters.status;
+  if (filters?.category) queryParams.where_category = filters.category;
+  if (filters?.limit) queryParams.limit = filters.limit;
+  if (filters?.offset) queryParams.offset = filters.offset;
+  if (filters?.orderBy) queryParams.orderBy = filters.orderBy;
+  if (filters?.orderDirection)
+    queryParams.orderDirection = filters.orderDirection;
+
+  return useQuery({
+    queryKey: queryKeys.productsByUser(userId),
+    queryFn: () => executeQuery<Product[]>(queryParams),
+    enabled: !!userId,
+    ...options,
+  });
+}
+
+// =============================================================================
+// PRODUCT QUERIES
+// =============================================================================
+
+/**
+ * Get all products with optional filtering
+ */
+export function useProducts(
+  filters?: {
+    status?: string;
+    category?: string;
+    user_id?: string;
+    limit?: number;
+    offset?: number;
+    orderBy?: string;
+    orderDirection?: "ASC" | "DESC";
+  },
+  options?: Omit<
+    UseQueryOptions<SqlQueryResponse<Product[]>, Error>,
+    "queryKey" | "queryFn"
+  >
+) {
+  const queryParams: Record<string, string | number> = {
+    table: "products",
+    operation: "select",
+  };
+
+  if (filters?.status) queryParams.where_status = filters.status;
+  if (filters?.category) queryParams.where_category = filters.category;
+  if (filters?.user_id) queryParams.where_user_id = filters.user_id;
+  if (filters?.limit) queryParams.limit = filters.limit;
+  if (filters?.offset) queryParams.offset = filters.offset;
+  if (filters?.orderBy) queryParams.orderBy = filters.orderBy;
+  if (filters?.orderDirection)
+    queryParams.orderDirection = filters.orderDirection;
+
+  return useQuery({
+    queryKey: queryKeys.products(),
+    queryFn: () => executeQuery<Product[]>(queryParams),
     ...options,
   });
 }
 
 /**
- * Get user products with infinite pagination
+ * Get a single product by ID
  */
-export function useUserProductsInfinite(
-  userId: string,
-  queryOptions?: {
+export function useProduct(
+  productId: string,
+  options?: Omit<
+    UseQueryOptions<SqlQueryResponse<Product | null>, Error>,
+    "queryKey" | "queryFn"
+  >
+) {
+  return useQuery({
+    queryKey: queryKeys.product(productId),
+    queryFn: async () => {
+      const result = await executeQuery<Product[]>({
+        table: "products",
+        operation: "select",
+        where_id: productId,
+      });
+
+      return {
+        ...result,
+        data: result.data?.[0] || null, // Get first product from array
+      };
+    },
+    enabled: !!productId,
+    ...options,
+  });
+}
+
+/**
+ * Get products with user information using JOIN
+ */
+export function useProductsWithUsers(
+  filters?: {
+    status?: string;
+    category?: string;
     limit?: number;
-    reverse?: boolean;
-    attributes?: string[];
+    offset?: number;
+  },
+  options?: Omit<
+    UseQueryOptions<SqlQueryResponse<any[]>, Error>,
+    "queryKey" | "queryFn"
+  >
+) {
+  const queryParams: Record<string, string | number> = {
+    table: "products",
+    operation: "select",
+    columns:
+      "products.id,products.name,products.price,products.status,users.name as user_name,users.email as user_email",
+    join_0_table: "users",
+    join_0_type: "LEFT",
+    join_0_on: "products.user_id = users.id",
+  };
+
+  if (filters?.status) queryParams.where_status = filters.status;
+  if (filters?.category) queryParams.where_category = filters.category;
+  if (filters?.limit) queryParams.limit = filters.limit;
+  if (filters?.offset) queryParams.offset = filters.offset;
+
+  return useQuery({
+    queryKey: ["products", "with-users", filters],
+    queryFn: () => executeQuery<any[]>(queryParams),
+    ...options,
+  });
+}
+
+// =============================================================================
+// CATEGORY QUERIES
+// =============================================================================
+
+/**
+ * Get all categories
+ */
+export function useCategories(
+  options?: Omit<
+    UseQueryOptions<SqlQueryResponse<Category[]>, Error>,
+    "queryKey" | "queryFn"
+  >
+) {
+  return useQuery({
+    queryKey: queryKeys.categories(),
+    queryFn: () =>
+      executeQuery<Category[]>({
+        table: "categories",
+        operation: "select",
+        orderBy: "name",
+        orderDirection: "ASC",
+      }),
+    ...options,
+  });
+}
+
+/**
+ * Get a single category by ID
+ */
+export function useCategory(
+  categoryId: string,
+  options?: Omit<
+    UseQueryOptions<SqlQueryResponse<Category | null>, Error>,
+    "queryKey" | "queryFn"
+  >
+) {
+  return useQuery({
+    queryKey: queryKeys.category(categoryId),
+    queryFn: async () => {
+      const result = await executeQuery<Category[]>({
+        table: "categories",
+        operation: "select",
+        where_id: categoryId,
+      });
+
+      return {
+        ...result,
+        data: result.data?.[0] || null, // Get first category from array
+      };
+    },
+    enabled: !!categoryId,
+    ...options,
+  });
+}
+
+// =============================================================================
+// GENERIC TABLE QUERIES
+// =============================================================================
+
+/**
+ * Generic hook to query any table
+ */
+export function useTable<T = any>(
+  tableName: string,
+  filters?: {
+    where?: Record<string, any>;
+    columns?: string[];
+    limit?: number;
+    offset?: number;
+    orderBy?: string;
+    orderDirection?: "ASC" | "DESC";
+    joins?: Array<{
+      table: string;
+      type: "INNER" | "LEFT" | "RIGHT" | "FULL";
+      on: string;
+    }>;
+  },
+  options?: Omit<
+    UseQueryOptions<SqlQueryResponse<T[]>, Error>,
+    "queryKey" | "queryFn"
+  >
+) {
+  const queryParams: Record<string, string | number> = {
+    table: tableName,
+    operation: "select",
+  };
+
+  // Add WHERE conditions
+  if (filters?.where) {
+    Object.entries(filters.where).forEach(([key, value]) => {
+      queryParams[`where_${key}`] = value;
+    });
   }
-) {
-  return useInfiniteQuery({
-    queryKey: queryKeys.userProducts(userId, queryOptions),
-    queryFn: ({ pageParam }: { pageParam: string | undefined }) =>
-      apiQuery<Product[]>({
-        operation: "queryRelated",
-        entityType: "User",
-        entityId: userId,
-        targetEntity: "Product",
-        limit: queryOptions?.limit || 10,
-        ...(queryOptions?.reverse !== undefined && {
-          reverse: queryOptions.reverse,
-        }),
-        ...(queryOptions?.attributes && {
-          attributes: queryOptions.attributes.join(","),
-        }),
-        ...(pageParam && { startKey: pageParam }),
-      }),
-    initialPageParam: undefined as string | undefined,
-    getNextPageParam: (lastPage: ApiResponse<Product[]>) =>
-      lastPage.nextStartKey || undefined,
-    enabled: !!userId,
-  });
-}
 
-/**
- * Get latest user products (newest first)
- */
-export function useLatestUserProducts(
-  userId: string,
-  limit: number = 5,
-  options?: Omit<
-    UseQueryOptions<ApiResponse<Product[]>, Error>,
-    "queryKey" | "queryFn"
-  >
-) {
-  return useQuery({
-    queryKey: queryKeys.userProducts(userId, { limit, reverse: true }),
-    queryFn: () =>
-      apiQuery<Product[]>({
-        operation: "queryRelated",
-        entityType: "User",
-        entityId: userId,
-        targetEntity: "Product",
-        limit,
-        reverse: true,
-      }),
-    enabled: !!userId,
-    ...options,
-  });
-}
+  // Add other filters
+  if (filters?.columns) queryParams.columns = filters.columns.join(",");
+  if (filters?.limit) queryParams.limit = filters.limit;
+  if (filters?.offset) queryParams.offset = filters.offset;
+  if (filters?.orderBy) queryParams.orderBy = filters.orderBy;
+  if (filters?.orderDirection)
+    queryParams.orderDirection = filters.orderDirection;
 
-/**
- * Get all user data (profile + all related entities)
- */
-export function useUserAllData(
-  userId: string,
-  options?: Omit<
-    UseQueryOptions<ApiResponse<UserData>, Error>,
-    "queryKey" | "queryFn"
-  >
-) {
-  return useQuery({
-    queryKey: queryKeys.userAllData(userId),
-    queryFn: () =>
-      apiQuery<UserData>({
-        operation: "queryAll",
-        entityType: "User",
-        entityId: userId,
-      }),
-    enabled: !!userId,
-    ...options,
-  });
-}
+  // Add joins
+  if (filters?.joins) {
+    filters.joins.forEach((join, index) => {
+      queryParams[`join_${index}_table`] = join.table;
+      queryParams[`join_${index}_type`] = join.type;
+      queryParams[`join_${index}_on`] = join.on;
+    });
+  }
 
-/**
- * Get user products within a time range
- */
-export function useUserProductsTimeRange(
-  userId: string,
-  startTime: string,
-  endTime: string,
-  options?: Omit<
-    UseQueryOptions<ApiResponse<Product[]>, Error>,
-    "queryKey" | "queryFn"
-  >
-) {
   return useQuery({
-    queryKey: ["user", userId, "products", "timerange", startTime, endTime],
-    queryFn: () =>
-      apiQuery<Product[]>({
-        operation: "queryTimeRange",
-        partitionKey: `User#${userId}`,
-        startTime,
-        endTime,
-        rangePrefix: "Product#",
-      }),
-    enabled: !!userId && !!startTime && !!endTime,
+    queryKey: filters
+      ? queryKeys.tableWithFilter(tableName, filters)
+      : queryKeys.table(tableName),
+    queryFn: () => executeQuery<T[]>(queryParams),
+    enabled: !!tableName,
     ...options,
   });
 }
 
 // =============================================================================
-// GENERIC ENTITY QUERIES
+// MUTATIONS
 // =============================================================================
 
 /**
- * Generic function to get any entity profile
+ * Create a new user
  */
-export function useEntityProfile<T = any>(
-  entityType: string,
-  entityId: string,
-  options?: Omit<UseQueryOptions<ApiResponse<T>, Error>, "queryKey" | "queryFn">
+export function useCreateUser(
+  options?: UseMutationOptions<
+    SqlQueryResponse<User[]>,
+    Error,
+    Omit<User, "id" | "created_at" | "updated_at">
+  >
 ) {
-  return useQuery({
-    queryKey: queryKeys.entityProfile(entityType, entityId),
-    queryFn: () =>
-      apiQuery<T>({
-        operation: "getItem",
-        partitionKey: `${entityType}#${entityId}`,
-        sortKey: "Profile",
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (userData) =>
+      executeQuery<User[]>({
+        table: "users",
+        operation: "insert",
+        data_name: userData.name,
+        data_email: userData.email,
+        data_status: userData.status || "active",
       }),
-    enabled: !!entityType && !!entityId,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.users() });
+    },
     ...options,
   });
 }
 
 /**
- * Generic function to get related entities
+ * Update a user
  */
-export function useEntityRelated<T = any>(
-  entityType: string,
-  entityId: string,
-  targetEntity: string,
-  queryOptions?: {
-    limit?: number;
-    reverse?: boolean;
-    attributes?: string[];
-  },
-  options?: Omit<
-    UseQueryOptions<ApiResponse<T[]>, Error>,
-    "queryKey" | "queryFn"
+export function useUpdateUser(
+  options?: UseMutationOptions<
+    SqlQueryResponse<User[]>,
+    Error,
+    { id: string; data: Partial<User> }
   >
 ) {
-  return useQuery({
-    queryKey: queryKeys.entityRelated(
-      entityType,
-      entityId,
-      targetEntity,
-      queryOptions
-    ),
-    queryFn: () =>
-      apiQuery<T[]>({
-        operation: "queryRelated",
-        entityType,
-        entityId,
-        targetEntity,
-        ...(queryOptions?.limit && { limit: queryOptions.limit }),
-        ...(queryOptions?.reverse !== undefined && {
-          reverse: queryOptions.reverse,
-        }),
-        ...(queryOptions?.attributes && {
-          attributes: queryOptions.attributes.join(","),
-        }),
-      }),
-    enabled: !!entityType && !!entityId && !!targetEntity,
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ id, data }) => {
+      const updateParams: Record<string, string | number> = {
+        table: "users",
+        operation: "update",
+        where_id: id,
+      };
+
+      // Add data fields
+      Object.entries(data).forEach(([key, value]) => {
+        if (value !== undefined && key !== "id") {
+          updateParams[`data_${key}`] = String(value);
+        }
+      });
+
+      return executeQuery<User[]>(updateParams);
+    },
+    onSuccess: (_, { id }) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.users() });
+      queryClient.invalidateQueries({ queryKey: queryKeys.user(id) });
+    },
     ...options,
   });
 }
 
 /**
- * Generic direct query with partition key and sort key pattern
+ * Delete a user
  */
-export function useDirectQuery<T = any>(
-  /**
-   * partitionKey: e.g. "User#123" or "Product#456"
-   */
-  partitionKey: string,
-  /**
-   * sortKeyPattern: e.g. "Product#" to match all products under the user
-   * or "Profile" for a single profile item
-   */
-  sortKeyPattern?: string,
-  /**
-   * queryOptions: additional options like limit, reverse, attributes, rangeStart, rangeEnd
-   */
-  queryOptions?: {
-    limit?: number;
-    reverse?: boolean;
-    attributes?: string[];
-    rangeStart?: string;
-    rangeEnd?: string;
-  },
-  /**
-   * options: additional query options
-   */
-  options?: Omit<
-    UseQueryOptions<ApiResponse<T[]>, Error>,
-    "queryKey" | "queryFn"
+export function useDeleteUser(
+  options?: UseMutationOptions<SqlQueryResponse<User[]>, Error, string>
+) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (userId) =>
+      executeQuery<User[]>({
+        table: "users",
+        operation: "delete",
+        where_id: userId,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.users() });
+    },
+    ...options,
+  });
+}
+
+/**
+ * Create a new product
+ */
+export function useCreateProduct(
+  options?: UseMutationOptions<
+    SqlQueryResponse<Product[]>,
+    Error,
+    Omit<Product, "id" | "created_at" | "updated_at">
   >
 ) {
-  return useQuery({
-    queryKey: queryKeys.directQuery(partitionKey, {
-      sortKeyPattern,
-      ...queryOptions,
-    }),
-    queryFn: () =>
-      apiQuery<T[]>({
-        operation: "query",
-        partitionKey,
-        ...(sortKeyPattern && { sortKeyPattern }),
-        ...(queryOptions?.limit && { limit: queryOptions.limit }),
-        ...(queryOptions?.reverse !== undefined && {
-          reverse: queryOptions.reverse,
-        }),
-        ...(queryOptions?.attributes && {
-          attributes: queryOptions.attributes.join(","),
-        }),
-        ...(queryOptions?.rangeStart && {
-          rangeStart: queryOptions.rangeStart,
-        }),
-        ...(queryOptions?.rangeEnd && { rangeEnd: queryOptions.rangeEnd }),
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (productData) => {
+      const createParams: Record<string, string | number> = {
+        table: "products",
+        operation: "insert",
+        data_name: productData.name,
+      };
+
+      // Add optional fields
+      if (productData.price) createParams.data_price = productData.price;
+      if (productData.description)
+        createParams.data_description = productData.description;
+      if (productData.category)
+        createParams.data_category = productData.category;
+      if (productData.user_id) createParams.data_user_id = productData.user_id;
+      if (productData.status) createParams.data_status = productData.status;
+
+      return executeQuery<Product[]>(createParams);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.products() });
+    },
+    ...options,
+  });
+}
+
+/**
+ * Update a product
+ */
+export function useUpdateProduct(
+  options?: UseMutationOptions<
+    SqlQueryResponse<Product[]>,
+    Error,
+    { id: string; data: Partial<Product> }
+  >
+) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ id, data }) => {
+      const updateParams: Record<string, string | number> = {
+        table: "products",
+        operation: "update",
+        where_id: id,
+      };
+
+      // Add data fields
+      Object.entries(data).forEach(([key, value]) => {
+        if (value !== undefined && key !== "id") {
+          updateParams[`data_${key}`] = String(value);
+        }
+      });
+
+      return executeQuery<Product[]>(updateParams);
+    },
+    onSuccess: (_, { id }) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.products() });
+      queryClient.invalidateQueries({ queryKey: queryKeys.product(id) });
+    },
+    ...options,
+  });
+}
+
+/**
+ * Delete a product
+ */
+export function useDeleteProduct(
+  options?: UseMutationOptions<SqlQueryResponse<Product[]>, Error, string>
+) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (productId) =>
+      executeQuery<Product[]>({
+        table: "products",
+        operation: "delete",
+        where_id: productId,
       }),
-    enabled: !!partitionKey,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.products() });
+    },
     ...options,
   });
 }
@@ -427,36 +645,54 @@ export function useDirectQuery<T = any>(
 // =============================================================================
 
 /**
- * Get user profile and latest products in a single hook
+ * Get user and their products in a single hook
  */
 export function useUserDashboard(userId: string, productLimit: number = 5) {
-  const profileQuery = useUserProfile(userId);
-  const productsQuery = useLatestUserProducts(userId, productLimit);
+  const userQuery = useUser(userId);
+  const productsQuery = useUserProducts(userId, {
+    limit: productLimit,
+    orderBy: "created_at",
+    orderDirection: "DESC",
+  });
 
   return {
-    profile: profileQuery,
+    user: userQuery,
     products: productsQuery,
-    isLoading: profileQuery.isLoading || productsQuery.isLoading,
-    isError: profileQuery.isError || productsQuery.isError,
-    error: profileQuery.error || productsQuery.error,
+    isLoading: userQuery.isLoading || productsQuery.isLoading,
+    isError: userQuery.isError || productsQuery.isError,
+    error: userQuery.error || productsQuery.error,
   };
 }
 
 /**
- * Search products across all users (example of direct query usage)
+ * Get products with category information
  */
-export function useProductSearch(
-  categoryKey: string,
-  searchOptions?: {
-    limit?: number;
-    reverse?: boolean;
-  }
-) {
-  return useDirectQuery(
-    categoryKey, // e.g., "Category#Electronics"
-    "Product#",
-    searchOptions
-  );
+export function useProductsWithCategories(filters?: {
+  status?: string;
+  limit?: number;
+  offset?: number;
+}) {
+  return useTable("products", {
+    columns: [
+      "products.id",
+      "products.name",
+      "products.price",
+      "products.status",
+      "categories.name as category_name",
+    ],
+    joins: [
+      {
+        table: "categories",
+        type: "LEFT",
+        on: "products.category = categories.id",
+      },
+    ],
+    where: filters?.status ? { status: filters.status } : undefined,
+    limit: filters?.limit,
+    offset: filters?.offset,
+    orderBy: "products.created_at",
+    orderDirection: "DESC",
+  });
 }
 
 // =============================================================================
@@ -464,25 +700,37 @@ export function useProductSearch(
 // =============================================================================
 
 /**
- * Helper to invalidate all user-related queries
+ * Helper to invalidate queries
  */
-export function useInvalidateUser() {
+export function useInvalidateQueries() {
+  const queryClient = useQueryClient();
+
   return {
+    invalidateUsers: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.users() });
+    },
     invalidateUser: (userId: string) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.user(userId) });
     },
-    invalidateUserProfile: (userId: string) => {
+    invalidateProducts: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.products() });
+    },
+    invalidateProduct: (productId: string) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.product(productId) });
+    },
+    invalidateCategories: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.categories() });
+    },
+    invalidateCategory: (categoryId: string) => {
       queryClient.invalidateQueries({
-        queryKey: queryKeys.userProfile(userId),
+        queryKey: queryKeys.category(categoryId),
       });
     },
-    invalidateUserProducts: (userId: string) => {
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.userProducts(userId),
-      });
+    invalidateTable: (tableName: string) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.table(tableName) });
     },
-    invalidateAllUsers: () => {
-      queryClient.invalidateQueries({ queryKey: ["user"] });
+    invalidateAll: () => {
+      queryClient.invalidateQueries();
     },
   };
 }
