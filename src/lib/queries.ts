@@ -63,7 +63,7 @@ interface Category {
 const createQueryUrl = (
   params: Record<string, string | number | boolean>
 ): URL => {
-  const url = new URL("http://localhost:3000/api/query"); // Base URL doesn't matter for generalQuery
+  const url = new URL(`${window.location.origin}/api/query`); // Base URL doesn't matter for generalQuery
   Object.entries(params).forEach(([key, value]) => {
     if (value !== undefined && value !== null) {
       url.searchParams.set(key, String(value));

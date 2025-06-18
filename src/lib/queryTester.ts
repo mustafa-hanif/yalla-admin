@@ -7,7 +7,7 @@ import type { QueryResult } from "./generalQueryTypes";
 export class QueryTester {
   private baseUrl: string;
 
-  constructor(baseUrl: string = "http://localhost:3000") {
+  constructor(baseUrl: string = window.location.origin) {
     this.baseUrl = baseUrl;
   }
 
