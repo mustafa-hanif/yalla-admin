@@ -197,7 +197,109 @@ const startServer = async () => {
         "/api/amazon/:keyword/:limit": async (req) => {
           const { keyword, limit } = req.params;
           const results = await searchAmazon(keyword, Number(limit));
-          return Response.json(results);
+
+          // Add products to our database
+          const savedProducts = [];
+
+          for (const product of results.products) {
+            try {
+              // Convert price string to number (remove currency symbols and non-numeric chars)
+              const priceValue =
+                product.price !== "N/A"
+                  ? parseFloat(
+                      product.price.replace(/[^\d.,]/g, "").replace(",", "")
+                    )
+                  : null;
+
+              // Convert rating string to number
+              const ratingValue =
+                product.rating !== "N/A" ? parseFloat(product.rating) : null;
+
+              // Convert review count string to number
+              const reviewCountValue =
+                product.reviewCount !== "N/A"
+                  ? parseInt(product.reviewCount.replace(/[^\d]/g, ""))
+                  : null;
+
+              // Insert product into database
+              const dbProduct = await sql`
+                INSERT INTO products (
+                  name, 
+                  price, 
+                  keyword, 
+                  rating, 
+                  review_count, 
+                  image_url, 
+                  source_url, 
+                  source_type,
+                  category,
+                  status,
+                  in_stock
+                )
+                VALUES (
+                  ${product.title},
+                  ${priceValue},
+                  ${keyword},
+                  ${ratingValue},
+                  ${reviewCountValue},
+                  ${product.image},
+                  ${product.url},
+                  'amazon',
+                  'Electronics',
+                  'active',
+                  true
+                )
+                RETURNING *
+              `;
+
+              savedProducts.push(dbProduct[0]);
+            } catch (error) {
+              console.error(`Failed to save product ${product.title}:`, error);
+            }
+          }
+
+          // Return response with both scraped data and saved products
+          return Response.json({
+            ...results,
+            savedToDatabase: {
+              count: savedProducts.length,
+              products: savedProducts,
+            },
+          });
+        },
+
+        "/api/products": async (req) => {
+          const url = new URL(req.url);
+          const keyword = url.searchParams.get("keyword");
+          const limit = parseInt(url.searchParams.get("limit") || "50");
+          const offset = parseInt(url.searchParams.get("offset") || "0");
+
+          let products;
+          if (keyword) {
+            products = await sql`
+              SELECT * FROM products 
+              WHERE keyword ILIKE ${`%${keyword}%`} 
+                OR name ILIKE ${`%${keyword}%`}
+              ORDER BY created_at DESC
+              LIMIT ${limit} OFFSET ${offset}
+            `;
+          } else {
+            products = await sql`
+              SELECT * FROM products 
+              ORDER BY created_at DESC
+              LIMIT ${limit} OFFSET ${offset}
+            `;
+          }
+
+          return Response.json({
+            success: true,
+            data: products,
+            pagination: {
+              limit,
+              offset,
+              keyword,
+            },
+          });
         },
 
         "/api/test": async (req) => {

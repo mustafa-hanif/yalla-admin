@@ -1,7 +1,7 @@
 import { serve, sql } from "bun";
 
 // Database schema version for migration tracking
-const CURRENT_SCHEMA_VERSION = 1;
+const CURRENT_SCHEMA_VERSION = 2;
 
 // Check if database exists and get current version
 const getCurrentSchemaVersion = async (): Promise<number> => {
@@ -84,6 +84,12 @@ const createInitialTables = async () => {
       category TEXT,
       status TEXT DEFAULT 'active',
       in_stock BOOLEAN DEFAULT true,
+      keyword TEXT,
+      rating DECIMAL(3,2),
+      review_count INTEGER,
+      image_url TEXT,
+      source_url TEXT,
+      source_type TEXT DEFAULT 'manual',
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
@@ -122,6 +128,8 @@ const createInitialTables = async () => {
   await sql`CREATE INDEX IF NOT EXISTS idx_products_user_id ON products(user_id)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_products_category ON products(category)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_products_in_stock ON products(in_stock)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_products_keyword ON products(keyword)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_products_source_type ON products(source_type)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id)`;
@@ -228,10 +236,20 @@ const runMigrations = async (fromVersion: number, toVersion: number) => {
         // This would be for future migrations
         console.log("Migration v1: No additional changes needed");
         break;
+      case 2:
+        // Add Amazon product fields to products table
+        console.log("Migration v2: Adding Amazon product fields");
+        await sql`ALTER TABLE products ADD COLUMN IF NOT EXISTS keyword TEXT`;
+        await sql`ALTER TABLE products ADD COLUMN IF NOT EXISTS rating DECIMAL(3,2)`;
+        await sql`ALTER TABLE products ADD COLUMN IF NOT EXISTS review_count INTEGER`;
+        await sql`ALTER TABLE products ADD COLUMN IF NOT EXISTS image_url TEXT`;
+        await sql`ALTER TABLE products ADD COLUMN IF NOT EXISTS source_url TEXT`;
+        await sql`ALTER TABLE products ADD COLUMN IF NOT EXISTS source_type TEXT DEFAULT 'manual'`;
+        await sql`CREATE INDEX IF NOT EXISTS idx_products_keyword ON products(keyword)`;
+        await sql`CREATE INDEX IF NOT EXISTS idx_products_source_type ON products(source_type)`;
+        console.log("Migration v2: Amazon product fields added successfully");
+        break;
       // Add future migrations here
-      // case 2:
-      //   await sql`ALTER TABLE products ADD COLUMN sku TEXT`;
-      //   break;
       default:
         console.log(`No migration defined for version ${version}`);
     }

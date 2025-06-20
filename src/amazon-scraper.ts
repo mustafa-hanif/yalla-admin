@@ -1,5 +1,6 @@
 import puppeteer from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
+import type { Product } from "./lib/types";
 
 puppeteer.use(StealthPlugin());
 
@@ -155,7 +156,7 @@ export class AmazonScraper {
 
 export async function searchAmazon(keyword, maxResults = 10) {
   const scraper = new AmazonScraper();
-  const products = await scraper.scrapeProducts(keyword, maxResults);
+  const products: Product[] = await scraper.scrapeProducts(keyword, maxResults);
 
   return {
     keyword,
