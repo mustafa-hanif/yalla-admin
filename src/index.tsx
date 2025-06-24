@@ -43,6 +43,7 @@ const startServer = async () => {
 
     // Then start the server
     const server = serve({
+      idleTimeout: 60, // 60 seconds idle timeout
       routes: {
         // Serve index.html for all unmatched routes.
         "/*": index,

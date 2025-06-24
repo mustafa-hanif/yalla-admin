@@ -49,6 +49,7 @@ export class AmazonScraper {
           timeout: 10000,
         });
       } catch (error) {
+        console.log(JSON.stringify(error));
         console.log("No search results found or page structure changed");
         return [];
       }
