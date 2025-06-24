@@ -45,8 +45,10 @@ export class AmazonScraper {
 
       // Wait for search results to load
       try {
+        // debug page
+        console.log(await page.content());
         await page.waitForSelector('[data-component-type="s-search-result"]', {
-          timeout: 10000,
+          timeout: 100000,
         });
       } catch (error) {
         console.log(JSON.stringify(error));
