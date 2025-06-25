@@ -1,163 +1,164 @@
-import puppeteer from "puppeteer-extra";
-import StealthPlugin from "puppeteer-extra-plugin-stealth";
+import * as cheerio from "cheerio";
 import type { Product } from "./lib/types";
-
-puppeteer.use(StealthPlugin());
 
 export class AmazonScraper {
   baseUrl: string;
+  private username: string;
+  private password: string;
+
   constructor() {
     this.baseUrl = "https://www.amazon.ae";
+    // You should set these environment variables or pass them as constructor parameters
+    this.username = process.env.OXYLABS_USERNAME || "YOUR_USERNAME";
+    this.password = process.env.OXYLABS_PASSWORD || "YOUR_PASSWORD";
   }
 
-  async scrapeProducts(keyword, maxResults = 10) {
-    let browser;
-
+  async scrapeProducts(keyword: string, maxResults = 10) {
     try {
-      // Launch browser
-      browser = await puppeteer.launch({
-        headless: true,
-        args: [
-          "--no-sandbox",
-          "--disable-setuid-sandbox",
-          "--disable-dev-shm-usage",
-          "--disable-accelerated-2d-canvas",
-          "--no-first-run",
-          "--no-zygote",
-          "--single-process",
-          "--disable-gpu",
-        ],
-      });
-
-      const page = await browser.newPage();
-
-      // Set user agent to avoid detection
-      await page.setUserAgent(
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-      );
-
-      // Navigate to Amazon.ae search
+      // Construct search URL
       const searchUrl = `${this.baseUrl}/s?k=${encodeURIComponent(keyword)}`;
       console.log(`Searching for: ${keyword}`);
       console.log(`URL: ${searchUrl}`);
 
-      await page.goto(searchUrl, { waitUntil: "networkidle2", timeout: 30000 });
+      // Prepare Oxylabs request body
+      const body = {
+        source: "amazon",
+        geo_location: "United Arab Emirates",
+        user_agent_type: "desktop_chrome",
+        url: searchUrl,
+      };
 
-      // Wait for search results to load
-      try {
-        // debug page
-        console.log(await page.content());
-        await page.waitForSelector('[data-component-type="s-search-result"]', {
-          timeout: 100000,
-        });
-      } catch (error) {
-        console.log(JSON.stringify(error));
+      console.log(this.username, this.password);
+      // Fetch HTML content via Oxylabs API
+      const response = await fetch("https://realtime.oxylabs.io/v1/queries", {
+        method: "post",
+        body: JSON.stringify(body),
+        headers: {
+          "Content-Type": "application/json",
+          Authorization:
+            "Basic " +
+            Buffer.from(`${this.username}:${this.password}`).toString("base64"),
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const apiResponse = await response.json();
+
+      // Extract HTML content from the API response
+      const html = apiResponse.results?.[0]?.content || "";
+
+      if (!html) {
+        console.log("No HTML content received from Oxylabs API");
+        return [];
+      }
+
+      console.log(`Received HTML content (${html.length} characters)`);
+
+      // Parse HTML with Cheerio
+      const $ = cheerio.load(html);
+
+      // Find product elements
+      const productElements = $('[data-component-type="s-search-result"]');
+      const results: Product[] = [];
+
+      if (productElements.length === 0) {
         console.log("No search results found or page structure changed");
         return [];
       }
 
       // Extract product data
-      const products = await page.evaluate((maxResults) => {
-        const productElements = document.querySelectorAll(
-          '[data-component-type="s-search-result"]'
-        );
-        const results = [];
+      productElements.each((i, element) => {
+        if (i >= maxResults) return false; // Break the loop
 
-        for (let i = 0; i < Math.min(productElements.length, maxResults); i++) {
-          const element = productElements[i];
+        try {
+          const $element = $(element);
 
-          try {
-            // Extract title
-            const titleElement =
-              element.querySelector("h2 a span") ||
-              element.querySelector('[data-cy="title-recipe-title"]') ||
-              element.querySelector("h2 span");
-            const title = titleElement
-              ? titleElement.textContent.trim()
-              : "N/A";
+          // Extract title
+          const titleElement = $element
+            .find('h2 a span, [data-cy="title-recipe-title"], h2 span')
+            .first();
+          const title = titleElement.text().trim() || "N/A";
 
-            // Extract price
-            const priceElement =
-              element.querySelector(".a-price-whole") ||
-              element.querySelector(".a-price .a-offscreen") ||
-              element.querySelector('[data-a-color="price"] .a-offscreen');
-            let price = "N/A";
-            if (priceElement) {
-              price = priceElement.textContent.trim().replace(/[^\d.,]/g, "");
-            }
-
-            // Extract rating
-            const ratingElement =
-              element.querySelector('[aria-label*="out of"]') ||
-              element.querySelector(".a-icon-alt");
-            let rating = "N/A";
-            if (ratingElement) {
-              const ratingText =
-                ratingElement.getAttribute("aria-label") ||
-                ratingElement.textContent;
-              const ratingMatch = ratingText.match(/(\d+\.?\d*)\s*out of/);
-              rating = ratingMatch ? ratingMatch[1] : "N/A";
-            }
-
-            // Extract image URL
-            const imageElement = element.querySelector("img");
-            const image = imageElement ? imageElement.src : "N/A";
-
-            // Extract product URL
-            const linkElement =
-              element.querySelector("h2 a") ||
-              element.querySelector('[aria-describedby="price-link"]');
-            let url = "N/A";
-            if (linkElement) {
-              const href = linkElement.getAttribute("href");
-              url = `https://amazon.ae${href}`;
-            }
-
-            // Extract review count
-            const reviewElement =
-              element.querySelector('[aria-label*="ratings"]') ||
-              element.querySelector('a[href*="#customerReviews"]');
-            let reviewCount = "N/A";
-            if (reviewElement) {
-              const reviewText =
-                reviewElement.textContent ||
-                reviewElement.getAttribute("aria-label");
-              const reviewMatch = reviewText.match(/(\d+,?\d*)/);
-              reviewCount = reviewMatch ? reviewMatch[1] : "N/A";
-            }
-
-            if (title !== "N/A") {
-              results.push({
-                title,
-                price,
-                rating,
-                reviewCount,
-                image,
-                url,
-              });
-            }
-          } catch (error) {
-            console.log("Error parsing product:", error.message);
+          // Extract price
+          const priceElement = $element
+            .find(
+              '.a-price-whole, .a-price .a-offscreen, [data-a-color="price"] .a-offscreen'
+            )
+            .first();
+          let price = "N/A";
+          if (priceElement.length) {
+            price = priceElement
+              .text()
+              .trim()
+              .replace(/[^\d.,]/g, "");
           }
+
+          // Extract rating
+          const ratingElement = $element
+            .find('[aria-label*="out of"], .a-icon-alt')
+            .first();
+          let rating = "N/A";
+          if (ratingElement.length) {
+            const ratingText =
+              ratingElement.attr("aria-label") || ratingElement.text();
+            const ratingMatch = ratingText?.match(/(\d+\.?\d*)\s*out of/);
+            rating = ratingMatch ? ratingMatch[1] : "N/A";
+          }
+
+          // Extract image URL
+          const imageElement = $element.find("img").first();
+          const image = imageElement.attr("src") || "N/A";
+
+          // Extract product URL
+          const linkElement = $element
+            .find('h2 a, [aria-describedby="price-link"]')
+            .first();
+          let url = "N/A";
+          if (linkElement.length) {
+            const href = linkElement.attr("href");
+            url = href ? `https://amazon.ae${href}` : "N/A";
+          }
+
+          // Extract review count
+          const reviewElement = $element
+            .find('[aria-label*="ratings"], a[href*="#customerReviews"]')
+            .first();
+          let reviewCount = "N/A";
+          if (reviewElement.length) {
+            const reviewText =
+              reviewElement.text() || reviewElement.attr("aria-label");
+            const reviewMatch = reviewText?.match(/(\d+,?\d*)/);
+            reviewCount = reviewMatch ? reviewMatch[1] : "N/A";
+          }
+
+          if (title !== "N/A") {
+            results.push({
+              title,
+              price,
+              rating,
+              reviewCount,
+              image,
+              url,
+            });
+          }
+        } catch (error) {
+          console.log("Error parsing product:", (error as Error).message);
         }
+      });
 
-        return results;
-      }, maxResults);
-
-      console.log(`Found ${products.length} products`);
-      return products;
+      console.log(`Found ${results.length} products`);
+      return results;
     } catch (error) {
-      console.error("Scraping error:", error.message);
+      console.error("Scraping error:", (error as Error).message);
       return [];
-    } finally {
-      if (browser) {
-        await browser.close();
-      }
     }
   }
 }
 
-export async function searchAmazon(keyword, maxResults = 10) {
+export async function searchAmazon(keyword: string, maxResults = 10) {
   const scraper = new AmazonScraper();
   const products: Product[] = await scraper.scrapeProducts(keyword, maxResults);
 
